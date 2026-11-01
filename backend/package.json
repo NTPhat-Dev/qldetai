@@ -1,0 +1,14 @@
+{
+  "name": "qldetai-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@koa/cors": "^5.0.0",
+    "koa": "^3.2.1"
+  }
+}
