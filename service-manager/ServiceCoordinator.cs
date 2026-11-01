@@ -49,8 +49,10 @@ internal sealed class ServiceCoordinator
             progress.Report($"Đang dùng giao diện dự án đã chạy tại cổng {WebHostPort}; giữ nguyên tiến trình hiện tại.");
         }
         var targets = externalWeb ? ServiceIds.Where(id => id != "web").ToArray() : ServiceIds;
-        var shouldBuild = forceBuild || existing.Where(service => !externalWeb || service.Id != "web").Sum(service => service.Containers) < targets.Length;
-        progress.Report(shouldBuild ? "Đang dựng và bật database, domain service, Gateway và giao diện…" : "Đang bật lại các dịch vụ đã có…");
+        // Always ask Compose to build before starting. Docker reuses cached layers,
+        // but this ensures a `git pull` is reflected in already-existing containers.
+        var shouldBuild = true;
+        progress.Report("Đang cập nhật image từ mã dự án và bật các dịch vụ…");
         var args = new List<string> { "up", "-d" };
         if (shouldBuild) args.Add("--build");
         args.AddRange(targets);
