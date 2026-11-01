@@ -85,11 +85,11 @@ function App() {
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.error ?? 'Không thể đăng nhập.')
       if (isAdminPortal && result.role !== 'QUAN_TRI') {
-        setError('Tài khoản này không thuộc vai trò quản trị. Hãy đăng nhập tại cổng sinh viên / giảng viên.')
+        setError('Tên đăng nhập hoặc mật khẩu không đúng.')
         return
       }
       if (!isAdminPortal && result.role === 'QUAN_TRI') {
-        setError('Đây là tài khoản quản trị. Hãy đăng nhập tại cổng /admin.')
+        setError('Tên đăng nhập hoặc mật khẩu không đúng.')
         return
       }
       if (result.mfaRequired) {
