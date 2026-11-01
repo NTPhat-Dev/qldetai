@@ -14,6 +14,7 @@ internal sealed class ServiceCoordinator
 {
     private readonly string _root;
     private readonly string _composeFile;
+    private bool _environmentCreatedOnLaunch;
     private static readonly string[] ServiceIds =
     [
         "identity-db", "academic-db", "registration-db",
@@ -24,6 +25,9 @@ internal sealed class ServiceCoordinator
     {
         _root = FindRepositoryRoot();
         _composeFile = Path.Combine(_root, "compose.yaml");
+        // The UI reads WEB_PORT while it is being built, before StartAllAsync runs.
+        // Create the ignored local .env on a fresh clone before any UI code reads it.
+        _environmentCreatedOnLaunch = PrepareEnvironment();
     }
 
     public string RepositoryRoot => _root;
@@ -31,7 +35,8 @@ internal sealed class ServiceCoordinator
 
     public async Task<StackStartResult> StartAllAsync(bool forceBuild, IProgress<string> progress, CancellationToken cancellationToken)
     {
-        var envChanged = PrepareEnvironment();
+        var envChanged = _environmentCreatedOnLaunch || PrepareEnvironment();
+        _environmentCreatedOnLaunch = false;
         progress.Report(envChanged ? "Đã tạo cấu hình cục bộ và sinh khóa bảo mật riêng." : "Đã giữ cấu hình hiện có.");
         await EnsureDockerAsync(progress, cancellationToken);
 
