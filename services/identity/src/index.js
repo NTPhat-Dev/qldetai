@@ -61,10 +61,14 @@ app.use(async (ctx, next) => {
     if (ctx.method === 'POST' && ctx.path === '/api/auth/change-password') {
       const claims = verifyBearer(ctx)
       const { currentPassword, newPassword } = ctx.request.body ?? {}
-      if (!currentPassword || !newPassword || newPassword.length < 12) ctx.throw(400, 'Mật khẩu mới phải có ít nhất 12 ký tự.')
-      const result = await pool.query('SELECT password_hash FROM identity.users WHERE id=$1', [claims.sub])
-      const checked = result.rowCount ? await verifyPassword(currentPassword, result.rows[0].password_hash) : { valid: false }
-      if (!checked.valid) ctx.throw(400, 'Mật khẩu hiện tại không chính xác.')
+      if (!newPassword || newPassword.length < 12) ctx.throw(400, 'Mật khẩu mới phải có ít nhất 12 ký tự.')
+      const result = await pool.query('SELECT password_hash,must_change_password FROM identity.users WHERE id=$1', [claims.sub])
+      if (!result.rowCount) ctx.throw(401, 'Tài khoản không còn tồn tại.')
+      if (!claims.mustChangePassword || !result.rows[0].must_change_password) {
+        if (!currentPassword) ctx.throw(400, 'Vui lòng nhập mật khẩu hiện tại.')
+        const checked = result.rowCount ? await verifyPassword(currentPassword, result.rows[0].password_hash) : { valid: false }
+        if (!checked.valid) ctx.throw(400, 'Mật khẩu hiện tại không chính xác.')
+      }
       await pool.query('UPDATE identity.users SET password_hash=$1,must_change_password=false,updated_at=now() WHERE id=$2', [await hashPassword(newPassword), claims.sub])
       ctx.body = { token: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: false }, jwtSecret, { expiresIn: '8h' }) }
       return
