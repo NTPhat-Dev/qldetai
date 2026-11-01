@@ -47,14 +47,12 @@ export default function RegistrationRounds({ token }: { token: string }) {
   }
 
   return <section className="content-card registration-rounds" id="rounds">
-    <div className="card-heading"><div><h2>Học kỳ và đợt đăng ký</h2><p>Đợt đăng ký đóng mặc định; mở khi đã sẵn sàng nhận đăng ký.</p></div></div>
+    <div className="card-heading"><div><h2>Học kỳ và đợt đăng ký</h2><p>Mã học kỳ và mã đợt được tự sinh; đợt đóng mặc định cho đến khi quản trị viên mở.</p></div></div>
     {error && <p className="account-message" role="alert">{error}</p>}
     <form className="round-form" onSubmit={create}>
-      <label>Mã học kỳ<input name="semesterCode" placeholder="2026-1" required/></label>
-      <label>Tên học kỳ<input name="semesterName" placeholder="Học kỳ 1 năm học 2026–2027" required/></label>
+      <label>Học kỳ<select name="semesterNumber" defaultValue="1" required><option value="1">Học kỳ 1</option><option value="2">Học kỳ 2</option></select></label>
       <label>Ngày bắt đầu học kỳ<input name="semesterStart" type="date" required/></label>
       <label>Ngày kết thúc học kỳ<input name="semesterEnd" type="date" required/></label>
-      <label>Mã đợt<input name="code" placeholder="DOT1" required/></label>
       <label>Mở nhận đăng ký<input name="opensAt" type="datetime-local" required/></label>
       <label>Đóng nhận đăng ký<input name="closesAt" type="datetime-local" required/></label>
       <button className="dark-button" disabled={busy}>Tạo đợt</button>

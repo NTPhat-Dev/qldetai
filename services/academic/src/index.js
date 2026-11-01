@@ -68,18 +68,31 @@ app.use(async (ctx) => {
     return
   }
   if (ctx.method === 'POST' && ctx.path === '/api/admin/rounds') {
-    const { semesterCode, semesterName, semesterStart, semesterEnd, code, opensAt, closesAt } = ctx.request.body ?? {}
-    if (![semesterCode,semesterName,semesterStart,semesterEnd,code,opensAt,closesAt].every((value) => typeof value === 'string' && value.trim())) ctx.throw(400, 'Điền đầy đủ thông tin học kỳ và đợt đăng ký.')
+    const { semesterNumber, semesterStart, semesterEnd, opensAt, closesAt } = ctx.request.body ?? {}
+    const semester = Number(semesterNumber)
+    const semesterDatesValid = typeof semesterStart === 'string' && typeof semesterEnd === 'string'
+      && Number.isFinite(Date.parse(semesterStart)) && Number.isFinite(Date.parse(semesterEnd))
+    const roundDatesValid = typeof opensAt === 'string' && typeof closesAt === 'string'
+      && Number.isFinite(Date.parse(opensAt)) && Number.isFinite(Date.parse(closesAt))
+    if (![1,2].includes(semester) || !semesterDatesValid || !roundDatesValid) ctx.throw(400, 'Chọn học kỳ và điền đầy đủ thời gian hợp lệ.')
     if (new Date(semesterStart) >= new Date(semesterEnd) || new Date(opensAt) >= new Date(closesAt)) ctx.throw(400, 'Thời điểm kết thúc phải sau thời điểm bắt đầu.')
+    const calendarStartYear = new Date(`${semesterStart}T00:00:00Z`).getUTCFullYear()
+    const calendarEndYear = new Date(`${semesterEnd}T00:00:00Z`).getUTCFullYear()
+    const schoolYearStart = semester === 1 ? calendarStartYear : calendarEndYear - 1
+    const semesterName = `Học kỳ ${semester} năm học ${schoolYearStart}-${schoolYearStart + 1}`
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
-      let semester = await client.query('SELECT id,name,starts_on::text,ends_on::text FROM academic.semesters WHERE code=$1', [semesterCode.trim()])
-      if (!semester.rowCount) semester = await client.query('INSERT INTO academic.semesters(code,name,starts_on,ends_on) VALUES($1,$2,$3,$4) RETURNING id,name,starts_on::text,ends_on::text', [semesterCode.trim(),semesterName.trim(),semesterStart,semesterEnd])
-      else if (semester.rows[0].name !== semesterName.trim() || semester.rows[0].starts_on !== semesterStart || semester.rows[0].ends_on !== semesterEnd) ctx.throw(409, 'Mã học kỳ đã tồn tại với thông tin khác.')
-      const round = await client.query('INSERT INTO academic.rounds(semester_id,code,opens_at,closes_at) VALUES($1,$2,$3,$4) RETURNING id,code,opens_at,closes_at,is_open', [semester.rows[0].id,code.trim(),opensAt,closesAt])
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`semester:${semester}:${semesterStart}:${semesterEnd}`])
+      let semesterRow = await client.query("SELECT id FROM academic.semesters WHERE starts_on=$1 AND ends_on=$2 AND name ILIKE $3", [semesterStart,semesterEnd,`Học kỳ ${semester}%`])
+      if (!semesterRow.rowCount) {
+        const semesterCode = `HK-${randomBytes(8).toString('hex').toUpperCase()}`
+        semesterRow = await client.query('INSERT INTO academic.semesters(code,name,starts_on,ends_on) VALUES($1,$2,$3,$4) RETURNING id', [semesterCode,semesterName,semesterStart,semesterEnd])
+      }
+      const roundCode = `DOT-${randomBytes(8).toString('hex').toUpperCase()}`
+      const round = await client.query('INSERT INTO academic.rounds(semester_id,code,opens_at,closes_at) VALUES($1,$2,$3,$4) RETURNING id,code,opens_at,closes_at,is_open', [semesterRow.rows[0].id,roundCode,opensAt,closesAt])
       await client.query('COMMIT'); ctx.status = 201; ctx.body = round.rows[0]
-    } catch (error) { await client.query('ROLLBACK'); if (error.code === '23505') ctx.throw(409, 'Mã đợt đã tồn tại trong học kỳ này.'); throw error } finally { client.release() }
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); if (error.code === '23505') ctx.throw(409, 'Mã tự sinh bị trùng. Hãy thử tạo lại đợt.'); throw error } finally { client.release() }
     return
   }
   const roundState = ctx.path.match(/^\/api\/admin\/rounds\/([^/]+)$/)
