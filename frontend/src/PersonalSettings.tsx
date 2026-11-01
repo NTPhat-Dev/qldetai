@@ -3,9 +3,9 @@ import type { FormEvent } from 'react'
 import QRCode from 'qrcode'
 import { startRegistration } from '@simplewebauthn/browser'
 
-type Profile = { code: string; name: string; phone: string | null; department: string; class?: string | null; academic_title?: string | null; degree?: string | null; specialization?: string | null }
+type Profile = { role: string; code: string; name: string; phone: string | null; department: string | null; class?: string | null; academic_title?: string | null; degree?: string | null; specialization?: string | null }
 type Security = { totpEnabled: boolean; passkeys: { id: string; label: string | null; created_at: string; last_used: string | null }[]; recoveryCodesRemaining: number }
-const API = 'http://localhost:3000/api'
+const API = '/api'
 
 export default function PersonalSettings({ token, page, onTokenChange }: { token: string; page: 'profile'|'settings'; onTokenChange: (token: string) => void }) {
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -129,9 +129,9 @@ export default function PersonalSettings({ token, page, onTokenChange }: { token
         profile ? <form className="personal-profile-form" onSubmit={saveProfile}>
           <label>Mã tài khoản<input value={profile.code} readOnly /></label>
           <label>Họ và tên<input value={profile.name} readOnly /></label>
-          <label>Khoa<input value={profile.department} readOnly /></label>
+          <label>Khoa<input value={profile.department ?? ''} readOnly /></label>
           {profile.class && <label>Lớp<input value={profile.class} readOnly /></label>}
-          {profile.academic_title !== undefined && <>
+          {profile.role === 'GIANG_VIEN' && <>
             <label>Học hàm<input name="academicTitle" defaultValue={profile.academic_title ?? ''} /></label>
             <label>Học vị<input name="degree" defaultValue={profile.degree ?? ''} /></label>
             <label>Chuyên môn<input name="specialization" defaultValue={profile.specialization ?? ''} /></label>

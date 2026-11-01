@@ -17,9 +17,10 @@ type PortalData = {
   profile: { ho_ten: string; ma_sinh_vien?: string; ma_giang_vien?: string; lop?: string } | null
   topics: Topic[]
   registrations?: Registration[]
+  serverTime?: string
 }
 
-const API = 'http://localhost:3000/api'
+const API = '/api'
 const statusNames: Record<string, string> = { CHO_DUYET: 'Chờ duyệt', DA_DUYET: 'Đã duyệt', TU_CHOI: 'Từ chối', DA_HUY: 'Đã hủy' }
 const localDateTime = (value?: string) => value ? new Date(value).toLocaleString('vi-VN') : '—'
 
@@ -31,10 +32,26 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   const [busy, setBusy] = useState(false)
 
   const reload = useCallback(async () => {
-    const response = await fetch(`${API}/portal/overview`, { headers: { Authorization: `Bearer ${token}` } })
-    const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(body.error ?? 'Không thể tải dữ liệu tài khoản.')
-    setData(body as PortalData)
+    let lastError: Error | null = null
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const response = await fetch(`${API}/portal/overview`, { headers: { Authorization: `Bearer ${token}` } })
+        const body = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          if (response.status < 500 || attempt === 3) throw new Error(body.error ?? 'Không thể tải dữ liệu tài khoản.')
+          lastError = new Error(body.error ?? 'Dịch vụ đang khôi phục kết nối…')
+        } else {
+          setData(body as PortalData)
+          setError('')
+          return
+        }
+      } catch (reason) {
+        lastError = reason instanceof Error ? reason : new Error('Không kết nối được dịch vụ.')
+        if (attempt === 3) throw lastError
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 700 * (attempt + 1)))
+    }
+    throw lastError ?? new Error('Không thể tải dữ liệu tài khoản.')
   }, [token])
 
   useEffect(() => { reload().catch((reason: Error) => setError(reason.message)) }, [reload])
@@ -68,11 +85,12 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   const registrations = data.registrations ?? []
   return (
     <main className="user-portal">
-      <header className="portal-header"><a className="portal-brand" href="/portal"><span>Q</span>QL Đề Tài</a><nav><button className={page === 'home' ? 'selected' : ''} onClick={() => setPage('home')}>Tổng quan</button><button onClick={() => { setPage('home'); setTimeout(() => document.getElementById(student ? 'topics' : 'my-topics')?.scrollIntoView(), 0) }}>{student ? 'Tìm đề tài' : 'Đề tài của tôi'}</button>{student && <button onClick={() => { setPage('home'); setTimeout(() => document.getElementById('registrations')?.scrollIntoView(), 0) }}>Đăng ký của tôi</button>}{!student && <button onClick={() => { setPage('home'); setTimeout(() => document.getElementById('review')?.scrollIntoView(), 0) }}>Duyệt đăng ký</button>}<button className={page === 'profile' ? 'selected' : ''} onClick={() => setPage('profile')}>Thông tin cá nhân</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => setPage('settings')}>Cài đặt</button></nav><div className="portal-user"><span>{name}</span><button onClick={onLogout}>Đăng xuất</button></div></header>
+      <header className="portal-header"><a className="portal-brand" href="/portal"><span className="brand-wordmark">ĐT</span><span className="brand-name">ĐỀ TÀI<small>HỆ THỐNG HỌC VỤ</small></span></a><nav><button className={page === 'home' ? 'selected' : ''} onClick={() => setPage('home')}>Tổng quan</button><button onClick={() => { setPage('home'); setTimeout(() => document.getElementById(student ? 'topics' : 'my-topics')?.scrollIntoView(), 0) }}>{student ? 'Tìm đề tài' : 'Đề tài của tôi'}</button>{student && <button onClick={() => { setPage('home'); setTimeout(() => document.getElementById('registrations')?.scrollIntoView(), 0) }}>Đăng ký của tôi</button>}{!student && <button onClick={() => { setPage('home'); setTimeout(() => document.getElementById('review')?.scrollIntoView(), 0) }}>Duyệt đăng ký</button>}<button className={page === 'profile' ? 'selected' : ''} onClick={() => setPage('profile')}>Thông tin cá nhân</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => setPage('settings')}>Cài đặt</button></nav><div className="portal-user"><span>{name}</span><button onClick={onLogout}>Đăng xuất</button></div></header>
       <section className="portal-main" id="home">
         <p className="eyebrow">CỔNG {student ? 'SINH VIÊN' : 'GIẢNG VIÊN'}</p>
         <h1>Xin chào, {name}</h1>
         <p className="portal-intro">{student ? 'Khám phá đề tài phù hợp và theo dõi tiến độ đăng ký.' : 'Quản lý đề tài hướng dẫn và xử lý đăng ký của sinh viên.'}</p>
+        {student && <p className="server-clock-note">Hạn chốt theo giờ máy chủ · Đồng hồ hệ thống ghi nhận {data.serverTime ? new Date(data.serverTime).toLocaleString('vi-VN') : 'vừa cập nhật'}</p>}
         {error && <p className="account-message" role="alert">{error}</p>}{message && <p className="account-message" role="status">{message}</p>}
         <section className="portal-summary">
           <article><span>{student ? 'MÃ SINH VIÊN' : 'MÃ GIẢNG VIÊN'}</span><strong>{data.profile?.ma_sinh_vien ?? data.profile?.ma_giang_vien ?? '—'}</strong></article>

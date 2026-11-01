@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 
-type Round = { id: string; code: string; opens_at: string; closes_at: string; is_open: boolean; semester_code: string; semester_name: string; semester_start: string; semester_end: string }
-const API = 'http://localhost:3000/api/admin'
+type Round = { id: string; code: string; opens_at: string; closes_at: string; is_open: boolean; window_state: 'CLOSED'|'SCHEDULED'|'EXPIRED'|'OPEN'; semester_code: string; semester_name: string; semester_start: string; semester_end: string }
+const API = '/api/admin'
 const displayDate = (value: string) => new Date(value).toLocaleString('vi-VN')
+const stateName = { CLOSED: 'Đã đóng thủ công', SCHEDULED: 'Chưa đến giờ mở', EXPIRED: 'Đã hết hạn', OPEN: 'Đang nhận đăng ký' } as const
 
 export default function RegistrationRounds({ token }: { token: string }) {
   const [rounds, setRounds] = useState<Round[]>([])
@@ -59,7 +60,7 @@ export default function RegistrationRounds({ token }: { token: string }) {
       <button className="dark-button" disabled={busy}>Tạo đợt</button>
     </form>
     <div className="table-wrap"><table><thead><tr><th>HỌC KỲ</th><th>ĐỢT</th><th>THỜI GIAN NHẬN</th><th>TRẠNG THÁI</th><th></th></tr></thead><tbody>
-      {rounds.length ? rounds.map((round) => <tr key={round.id}><td>{round.semester_name} ({round.semester_code})</td><td>{round.code}</td><td>{displayDate(round.opens_at)} – {displayDate(round.closes_at)}</td><td>{round.is_open ? 'Đang mở' : 'Đã đóng'}</td><td><button className="outline-button" disabled={busy} onClick={() => void toggle(round)}>{round.is_open ? 'Đóng đợt' : 'Mở đợt'}</button></td></tr>) : <tr><td colSpan={5} className="empty-state">Chưa có đợt đăng ký.</td></tr>}
+      {rounds.length ? rounds.map((round) => <tr key={round.id}><td>{round.semester_name} ({round.semester_code})</td><td>{round.code}</td><td>{displayDate(round.opens_at)} – {displayDate(round.closes_at)}</td><td><span className={`status-pill round-${round.window_state.toLowerCase()}`}>{stateName[round.window_state]}</span></td><td><button className="outline-button" disabled={busy || round.window_state === 'EXPIRED'} onClick={() => void toggle(round)}>{round.is_open ? 'Đóng đợt' : 'Mở đợt'}</button></td></tr>) : <tr><td colSpan={5} className="empty-state">Chưa có đợt đăng ký.</td></tr>}
     </tbody></table></div>
   </section>
 }

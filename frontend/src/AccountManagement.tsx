@@ -4,7 +4,7 @@ import type { FormEvent } from 'react'
 type Department = { id: string; code: string; name: string }
 type ClassItem = { id: string; code: string; name: string }
 type Account = { id: string; username: string; role: string; status: string; name: string; profile_code: string; department: string | null }
-const API = 'http://localhost:3000/api/admin'
+const API = '/api/admin'
 
 export default function AccountManagement({ token }: { token: string }) {
   const [departments, setDepartments] = useState<Department[]>([])
@@ -96,7 +96,7 @@ export default function AccountManagement({ token }: { token: string }) {
       await load()
       setMessage(`Tài khoản đã cấp — mã/tên đăng nhập: ${result.username}; mật khẩu tạm: ${result.temporaryPassword}. Hãy lưu và gửi riêng cho người dùng; mật khẩu chỉ hiện lần này.`)
     } catch {
-      setMessage('Không kết nối được máy chủ. Hãy kiểm tra backend rồi thử lại.')
+      setMessage('Không kết nối được dịch vụ. Hãy kiểm tra trình quản lý dịch vụ rồi thử lại.')
     }
   }
 

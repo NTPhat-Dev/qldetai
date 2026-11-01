@@ -1,7 +1,12 @@
 node_modules/
+service-manager/bin/
+service-manager/obj/
 dist/
 dist-ssr/
 *.local
 .env
 .env.*
 !.env.example
+!.env.docker.example
+database/*.dump
+database/backups/

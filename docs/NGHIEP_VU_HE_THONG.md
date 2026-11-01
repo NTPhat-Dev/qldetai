@@ -76,6 +76,8 @@ Tài khoản/vai trò; hồ sơ sinh viên, giảng viên, quản trị; khoa/l�
 ## Tình trạng triển khai
 
 - **Đã nối giao diện/API:** đăng nhập theo vai trò, đổi mật khẩu, hồ sơ cá nhân; cài đặt Google Authenticator, mã khôi phục và Passkey; tạo khoa/lớp/tài khoản SV/GV; học kỳ/đợt; tạo/công bố đề tài; đăng ký theo hạn/sức chứa; giảng viên duyệt/từ chối; sinh viên hủy đơn chờ.
+- **Thời hạn và sức chứa:** PostgreSQL kiểm tra giờ máy chủ trong hàm đăng ký, lấy giao giữa hạn đề tài, đợt và hạn riêng nếu có. Hàm khóa theo đề tài/đợt trong transaction trước khi đếm chỗ; đăng ký tranh chấp được tuần tự hóa và không vượt sức chứa. Giao diện chỉ hiển thị giờ máy chủ để người học biết mốc chốt; giờ thiết bị không tham gia quyết định.
+- **Vận hành phát triển:** Docker Compose chạy PostgreSQL/API/web; PostgreSQL có named volume và snapshot schema-only, không nạp lại schema khi volume đã có dữ liệu. Ứng dụng quản lý dịch vụ WinForms bật/tắt từng dịch vụ để thử gián đoạn. API tách liveness/readiness, trả 503 khi PostgreSQL mất kết nối, pool tự nối lại và GET portal thử phục hồi có giới hạn.
 - **Đã điều chỉnh qua pgAdmin:** email tài khoản được phép để trống; tài khoản mới không tạo email giả. Bảng thử nghiệm xin cấp tài khoản đã được gỡ khi bảng rỗng.
 - **Còn thiếu:** cấu hình thời hạn riêng từng đề tài/đợt; chỉnh sửa/lưu trữ đề tài; lịch sử có ghi chú và trang tra cứu; thông báo; quản lý khóa tài khoản/phiên; báo cáo.
 

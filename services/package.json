@@ -1,21 +1,21 @@
 {
-  "name": "qldetai-backend",
-  "version": "1.0.0",
+  "name": "qldetai-services",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.js",
-    "start": "node src/index.js"
+    "identity": "node identity/src/index.js",
+    "academic": "node academic/src/index.js",
+    "registration": "node registration/src/index.js",
+    "gateway": "node gateway/src/index.js"
   },
   "dependencies": {
+    "@simplewebauthn/server": "^14.0.3",
     "@koa/bodyparser": "^6.1.0",
     "@koa/cors": "^5.0.0",
-    "@simplewebauthn/server": "^14.0.3",
     "argon2": "^0.45.1",
     "bcryptjs": "^3.0.3",
-    "dotenv": "^16.6.1",
-    "jsonwebtoken": "^9.0.3",
     "koa": "^3.2.1",
+    "jsonwebtoken": "^9.0.3",
     "otpauth": "^9.5.2",
     "pg": "^8.16.3"
   },

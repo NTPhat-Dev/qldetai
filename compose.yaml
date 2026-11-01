@@ -1,0 +1,186 @@
+name: qldetai
+
+services:
+  identity-db:
+    profiles: ["soa"]
+    image: postgres:18
+    environment:
+      POSTGRES_DB: identity
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Create .env from .env.docker.example}
+    volumes:
+      - qldetai_identity_data:/var/lib/postgresql
+      - ./services/identity/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    networks: [identity-private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identity -d identity"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  academic-db:
+    profiles: ["soa"]
+    image: postgres:18
+    environment:
+      POSTGRES_DB: academic
+      POSTGRES_USER: academic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Create .env from .env.docker.example}
+    volumes:
+      - qldetai_academic_data:/var/lib/postgresql
+      - ./services/academic/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    networks: [academic-private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U academic -d academic"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  registration-db:
+    profiles: ["soa"]
+    image: postgres:18
+    environment:
+      POSTGRES_DB: registration
+      POSTGRES_USER: registration
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Create .env from .env.docker.example}
+    volumes:
+      - qldetai_registration_data:/var/lib/postgresql
+      - ./services/registration/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    networks: [registration-private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U registration -d registration"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  identity-service:
+    profiles: ["soa"]
+    build:
+      context: .
+      dockerfile: services/identity/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3101
+      DATABASE_URL: postgresql://identity:${POSTGRES_PASSWORD:?Create .env from .env.docker.example}@identity-db:5432/identity
+      JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?Create .env from .env.docker.example}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:5173}
+    depends_on:
+      identity-db:
+        condition: service_healthy
+    networks: [identity-private, soa-mesh]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3101/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  academic-service:
+    profiles: ["soa"]
+    build:
+      context: .
+      dockerfile: services/academic/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3102
+      DATABASE_URL: postgresql://academic:${POSTGRES_PASSWORD:?Create .env from .env.docker.example}@academic-db:5432/academic
+      JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+    depends_on:
+      academic-db:
+        condition: service_healthy
+    networks: [academic-private, soa-mesh]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3102/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  registration-service:
+    profiles: ["soa"]
+    build:
+      context: .
+      dockerfile: services/registration/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3103
+      DATABASE_URL: postgresql://registration:${POSTGRES_PASSWORD:?Create .env from .env.docker.example}@registration-db:5432/registration
+      JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+    depends_on:
+      registration-db:
+        condition: service_healthy
+    networks: [registration-private, soa-mesh]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3103/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  api-gateway:
+    profiles: ["soa"]
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3100
+      JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      academic-service:
+        condition: service_healthy
+      registration-service:
+        condition: service_healthy
+    networks: [soa-mesh]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${WEB_PORT:-5173}:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    networks: [default, soa-mesh]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 4s
+      retries: 4
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  qldetai_identity_data:
+  qldetai_academic_data:
+  qldetai_registration_data:
+
+networks:
+  identity-private:
+    internal: true
+  academic-private:
+    internal: true
+  registration-private:
+    internal: true
+  soa-mesh:
+    internal: true

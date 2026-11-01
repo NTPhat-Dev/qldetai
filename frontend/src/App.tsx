@@ -11,7 +11,7 @@ type Overview = {
   recentTopics: { code: string; title: string; published: boolean; department: string | null; created_at: string }[]
 }
 
-const API = 'http://localhost:3000/api'
+const API = '/api'
 const isAdminPortal = window.location.pathname.startsWith('/admin')
 const tokenKey = isAdminPortal ? 'adminToken' : 'portalToken'
 const changeRequiredKey = `${tokenKey}ChangeRequired`
@@ -33,17 +33,26 @@ function App() {
   useEffect(() => {
     if (!token) return
     if (!isAdminPortal) return
-    fetch(`${API}/admin/overview`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Phiên đăng nhập đã hết hạn.')
-        return response.json() as Promise<Overview>
-      })
-      .then(setOverview)
-      .catch((reason: Error) => {
-        setError(reason.message)
-        setToken('')
-        sessionStorage.removeItem(tokenKey)
-      })
+    let cancelled = false
+    let retryTimer = 0
+    const load = async (attempt: number) => {
+      try {
+        const response = await fetch(`${API}/admin/overview`, { headers: { Authorization: `Bearer ${token}` } })
+        const body = await response.json().catch(() => ({}))
+        if (response.status === 401) {
+          if (!cancelled) { setError(body.error ?? 'Phiên đăng nhập đã hết hạn.'); setToken(''); sessionStorage.removeItem(tokenKey) }
+          return
+        }
+        if (!response.ok) throw new Error(body.error ?? 'Dịch vụ đang khôi phục kết nối.')
+        if (!cancelled) { setOverview(body as Overview); setError('') }
+      } catch (reason) {
+        if (cancelled) return
+        setError(reason instanceof Error ? reason.message : 'Không kết nối được máy chủ.')
+        if (attempt < 4) retryTimer = window.setTimeout(() => void load(attempt + 1), Math.min(1000 * (2 ** attempt), 8000))
+      }
+    }
+    void load(0)
+    return () => { cancelled = true; window.clearTimeout(retryTimer) }
   }, [token])
 
   function completeLogin(result: { token: string; role: string; mustChangePassword: boolean }) {
@@ -175,7 +184,7 @@ function App() {
   return (
     <main className="admin-shell">
       <aside className="sidebar">
-        <div className="side-brand"><span className="brand-square">Q</span><span>QL Đề Tài<small>ADMIN CONSOLE</small></span></div>
+        <div className="side-brand"><span className="brand-wordmark">ĐT</span><span>ĐỀ TÀI<small>HỆ THỐNG HỌC VỤ</small></span></div>
         <p className="nav-label">MENU</p>
         <a className="nav-item active" href="#overview"><span>▦</span>Tổng quan</a>
         <a className="nav-item" href="#topics"><span>▤</span>Đề tài</a>
@@ -186,7 +195,7 @@ function App() {
         <div className="sidebar-bottom"><span className="avatar">AD</span><span>Quản trị viên<small>admin.demo</small></span><button onClick={() => { sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(changeRequiredKey); window.history.replaceState(null, '', '/admin'); setToken(''); setOverview(null) }} aria-label="Đăng xuất">↗</button></div>
       </aside>
       <section className="admin-content" id="overview">
-        <header className="topbar"><div><p className="eyebrow">TRUNG TÂM ĐIỀU HÀNH</p><h1>Tổng quan</h1></div><div className="topbar-date">HỆ THỐNG QUẢN LÝ ĐỀ TÀI</div></header>
+        <header className="topbar"><div><p className="eyebrow">01 / TRUNG TÂM ĐIỀU HÀNH</p><h1>Tổng quan</h1></div><div className="topbar-date">CỔNG QUẢN TRỊ <span>•</span> HỌC VỤ</div></header>
         {error && <div className="notice">{error}</div>}
         {!overview ? <div className="loading-card">Đang tải số liệu quản trị…</div> : <>
           <section className="stat-grid" aria-label="Thống kê">
