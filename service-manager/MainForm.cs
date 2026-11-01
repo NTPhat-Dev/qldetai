@@ -35,7 +35,7 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         _coordinator = new ServiceCoordinator();
-        Text = "QL Đề Tài · Trình quản lý dịch vụ";
+        Text = "DEMO · Trình quản lý dịch vụ";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(880, 620);
         Size = new Size(1000, 720);
@@ -90,7 +90,7 @@ internal sealed class MainForm : Form
         var bar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 0, 6), BackColor = Paper };
         var mark = new Label
         {
-            Text = "QLĐT  /  QUẢN LÝ DỊCH VỤ",
+            Text = "DEMO  /  QUẢN LÝ DỊCH VỤ",
             Dock = DockStyle.Left,
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,

@@ -166,7 +166,7 @@ function App() {
     return (
       <main className="login-page">
         <section className="login-panel" aria-labelledby="login-title">
-          <p className="eyebrow">QUẢN LÝ ĐỀ TÀI</p>
+          <p className="eyebrow">DEMO</p>
           <h1 id="login-title">{isAdminPortal ? 'Đăng nhập quản trị' : 'Đăng nhập sinh viên / giảng viên'}</h1>
           <form className="login-form" onSubmit={handleLogin}>
             <label htmlFor="username">Tên đăng nhập</label>
@@ -184,7 +184,7 @@ function App() {
   return (
     <main className="admin-shell">
       <aside className="sidebar">
-        <div className="side-brand"><span className="brand-wordmark">ĐT</span><span>ĐỀ TÀI<small>HỆ THỐNG HỌC VỤ</small></span></div>
+        <div className="side-brand">DEMO</div>
         <p className="nav-label">MENU</p>
         <a className="nav-item active" href="#overview"><span>▦</span>Tổng quan</a>
         <a className="nav-item" href="#topics"><span>▤</span>Đề tài</a>

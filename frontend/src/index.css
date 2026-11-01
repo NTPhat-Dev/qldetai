@@ -25,9 +25,9 @@ button, input, select, textarea { font: inherit; }
 button { -webkit-tap-highlight-color: transparent; }
 ::selection { background: #171715; color: white; }
 
-.login-page { position: relative; display: flex; min-height: 100vh; justify-content: flex-end; align-items: center; overflow: hidden; padding: clamp(20px, 7vw, 112px); background: linear-gradient(90deg, rgba(244,242,236,.06), rgba(244,242,236,.3)), url('/nen.png') center / cover no-repeat; }
+.login-page { position: relative; display: flex; min-height: 100vh; justify-content: flex-end; align-items: center; overflow: hidden; padding: clamp(20px, 7vw, 112px); background: linear-gradient(135deg, #101828, #1d4ed8 55%, #dbeafe); }
 .login-page::before { position: absolute; inset: 24px auto 24px 24px; width: 1px; background: rgba(23,23,21,.26); content: ""; }
-.login-page::after { position: absolute; bottom: 34px; left: 52px; color: rgba(23,23,21,.66); content: "QLĐT  /  HỆ THỐNG HỌC VỤ"; font-family: var(--mono); font-size: 10px; letter-spacing: .12em; }
+.login-page::after { position: absolute; bottom: 34px; left: 52px; color: rgba(255,255,255,.78); content: "DEMO"; font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .14em; }
 .login-panel { position: relative; z-index: 1; width: min(100%, 440px); padding: clamp(30px, 4vw, 52px); border: 1px solid rgba(23,23,21,.18); border-radius: 3px; background: rgba(255,254,250,.94); box-shadow: 15px 18px 0 rgba(23,23,21,.08); backdrop-filter: blur(16px); }
 .login-panel::before { display: block; width: 42px; height: 4px; margin-bottom: 32px; background: var(--ink); content: ""; }
 .eyebrow { margin: 0 0 12px; color: #716e67; font-family: var(--mono); font-size: 10px; font-weight: 650; letter-spacing: .16em; }
