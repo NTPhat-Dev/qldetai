@@ -85,11 +85,11 @@ function App() {
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.error ?? 'Không thể đăng nhập.')
       if (isAdminPortal && result.role !== 'QUAN_TRI') {
-        setError('Tên đăng nhập hoặc mật khẩu không đúng.')
+        setError('Sai tên đăng nhập hoặc mật khẩu.')
         return
       }
       if (!isAdminPortal && result.role === 'QUAN_TRI') {
-        setError('Tên đăng nhập hoặc mật khẩu không đúng.')
+        setError('Sai tên đăng nhập hoặc mật khẩu.')
         return
       }
       if (result.mfaRequired) {

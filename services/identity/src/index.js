@@ -49,7 +49,7 @@ app.use(async (ctx, next) => {
     const user = result.rows[0]
     let checked = { valid: false, needsUpgrade: false }
     try { if (user?.password_hash) checked = await verifyPassword(password, user.password_hash) } catch { checked = { valid: false, needsUpgrade: false } }
-    if (!user || user.status !== 'HOAT_DONG' || !checked.valid) ctx.throw(401, 'Tên đăng nhập hoặc mật khẩu không đúng.')
+    if (!user || user.status !== 'HOAT_DONG' || !checked.valid) ctx.throw(401, 'Sai tên đăng nhập hoặc mật khẩu.')
     if (checked.needsUpgrade) await pool.query('UPDATE identity.users SET password_hash=$1,updated_at=now() WHERE id=$2', [await hashPassword(password), user.id])
     const factors = await pool.query('SELECT EXISTS(SELECT 1 FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL) AS totp, EXISTS(SELECT 1 FROM identity.passkeys WHERE user_id=$1) AS passkey', [user.id])
     if (factors.rows[0].totp || factors.rows[0].passkey) {
