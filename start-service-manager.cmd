@@ -1,11 +1,11 @@
 @echo off
+setlocal
 cd /d "%~dp0"
-where dotnet >nul 2>nul
-if errorlevel 1 (
-  echo Vui long cai .NET 10 SDK de chay trinh quan ly dich vu Windows.
-  echo Tai tai: https://dotnet.microsoft.com/download/dotnet/10.0
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\bootstrap.ps1"
+set "BOOTSTRAP_EXIT=%ERRORLEVEL%"
+if not "%BOOTSTRAP_EXIT%"=="0" (
+  echo.
+  echo Setup did not finish. Follow the message above, then run this file again.
   pause
-  exit /b 1
 )
-dotnet run --project service-manager\ServiceManager.csproj
-if errorlevel 1 pause
+exit /b %BOOTSTRAP_EXIT%

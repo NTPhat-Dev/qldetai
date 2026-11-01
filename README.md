@@ -4,10 +4,12 @@ Hệ thống quản lý đề tài học thuật: cổng quản trị, cổng si
 
 ## Khởi chạy trên máy mới
 
-Yêu cầu .NET 10 SDK và Docker Desktop. Clone repository rồi chạy `start-service-manager.cmd` (PowerShell: `.\start-service-manager.cmd`). Ứng dụng WinForms sẽ tự:
+Clone repository rồi chạy `start-service-manager.cmd` (PowerShell: `.\start-service-manager.cmd`). Bộ khởi chạy tự kiểm tra và cài .NET 10 SDK cùng Docker Desktop bằng WinGet nếu máy còn thiếu. Nó kiểm tra WSL 2 trước khi cài Docker; nếu Windows cần bật WSL, bộ khởi chạy sẽ xin quyền quản trị và yêu cầu khởi động lại, sau đó chạy lại `start-service-manager.cmd` để tiếp tục. Cần có kết nối Internet và WinGet (App Installer). Các điều khoản Docker Desktop có thể cần được chấp nhận ở lần mở đầu tiên.
+
+Trình quản lý dịch vụ sẽ tự:
 
 1. Tạo `.env` cục bộ với mật khẩu PostgreSQL, khóa JWT và khóa mã hóa TOTP ngẫu nhiên nếu máy chưa có cấu hình.
-2. Khởi động Docker Desktop nếu đã cài nhưng chưa chạy.
+2. Mở Docker Desktop nếu ứng dụng chưa chạy và chờ engine sẵn sàng.
 3. Dựng và bật ba PostgreSQL riêng, các domain service, API Gateway và web; chờ đến khi tất cả báo khỏe.
 4. Khởi tạo schema vào các volume trống và tạo tài khoản quản trị `admin.demo` nếu Identity DB chưa có quản trị viên.
 5. Hiện mật khẩu quản trị ngẫu nhiên một lần trong trình quản lý. Lưu lại, đăng nhập và đổi mật khẩu ngay.

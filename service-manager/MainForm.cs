@@ -83,7 +83,7 @@ internal sealed class MainForm : Form
         var bar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 0, 6), BackColor = Paper };
         var mark = new Label
         {
-            Text = "QLĐT  /  SERVICE MANAGER",
+            Text = "QLĐT  /  QUẢN LÝ DỊCH VỤ",
             Dock = DockStyle.Left,
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
@@ -207,14 +207,14 @@ internal sealed class MainForm : Form
         _serviceCards.BackColor = Paper;
         foreach (var service in new[]
         {
-            new ServiceStatus("identity-db", "Identity PostgreSQL", "NỘI BỘ · 5432", false, "stopped", 0),
-            new ServiceStatus("academic-db", "Academic PostgreSQL", "NỘI BỘ · 5432", false, "stopped", 0),
-            new ServiceStatus("registration-db", "Registration PostgreSQL", "NỘI BỘ · 5432", false, "stopped", 0),
-            new ServiceStatus("identity-service", "Identity service", "NỘI BỘ · 3101", false, "stopped", 0),
-            new ServiceStatus("academic-service", "Academic service", "NỘI BỘ · 3102", false, "stopped", 0),
-            new ServiceStatus("registration-service", "Registration service", "NỘI BỘ · 3103", false, "stopped", 0),
-            new ServiceStatus("api-gateway", "API Gateway", "NỘI BỘ · 3100", false, "stopped", 0),
-            new ServiceStatus("web", "Web client", $"{_coordinator.WebHostPort} → 80", false, "stopped", 0),
+            new ServiceStatus("identity-db", "Cơ sở dữ liệu định danh", "NỘI BỘ · 5432", false, "stopped", 0),
+            new ServiceStatus("academic-db", "Cơ sở dữ liệu học vụ", "NỘI BỘ · 5432", false, "stopped", 0),
+            new ServiceStatus("registration-db", "Cơ sở dữ liệu đăng ký", "NỘI BỘ · 5432", false, "stopped", 0),
+            new ServiceStatus("identity-service", "Dịch vụ tài khoản", "NỘI BỘ · 3101", false, "stopped", 0),
+            new ServiceStatus("academic-service", "Dịch vụ học vụ", "NỘI BỘ · 3102", false, "stopped", 0),
+            new ServiceStatus("registration-service", "Dịch vụ đăng ký", "NỘI BỘ · 3103", false, "stopped", 0),
+            new ServiceStatus("api-gateway", "Cổng API", "NỘI BỘ · 3100", false, "stopped", 0),
+            new ServiceStatus("web", "Giao diện web", $"{_coordinator.WebHostPort} → 80", false, "stopped", 0),
         }) _serviceCards.Controls.Add(CreateServiceCard(service));
         return _serviceCards;
     }
@@ -233,10 +233,10 @@ internal sealed class MainForm : Form
 
         var role = Eyebrow(service.Id switch
         {
-            "identity-db" or "academic-db" or "registration-db" => "DATABASE   /   DOMAIN",
-            "identity-service" or "academic-service" or "registration-service" => "API   /   SERVICE",
-            "api-gateway" => "EDGE   /   GATEWAY",
-            _ => "WEB   /   FRONTEND",
+            "identity-db" or "academic-db" or "registration-db" => "CƠ SỞ DỮ LIỆU",
+            "identity-service" or "academic-service" or "registration-service" => "DỊCH VỤ API",
+            "api-gateway" => "CỔNG KẾT NỐI",
+            _ => "GIAO DIỆN",
         });
         role.Location = new Point(14, 43);
         role.Size = new Size(145, 16);

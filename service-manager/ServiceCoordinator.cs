@@ -395,14 +395,14 @@ internal sealed class ServiceCoordinator
             var health = found.Select(container => GetString(container, "Health", "health")).FirstOrDefault(value => value.Length > 0) ?? (running ? "running" : "stopped");
             var display = id switch
             {
-                "identity-db" => ("Identity PostgreSQL", "NỘI BỘ · 5432"),
-                "academic-db" => ("Academic PostgreSQL", "NỘI BỘ · 5432"),
-                "registration-db" => ("Registration PostgreSQL", "NỘI BỘ · 5432"),
-                "identity-service" => ("Identity service", "NỘI BỘ · 3101"),
-                "academic-service" => ("Academic service", "NỘI BỘ · 3102"),
-                "registration-service" => ("Registration service", "NỘI BỘ · 3103"),
-                "api-gateway" => ("API Gateway", "NỘI BỘ · 3100"),
-                _ => ("Web client", $"{WebHostPort} → 80"),
+                "identity-db" => ("Cơ sở dữ liệu định danh", "NỘI BỘ · 5432"),
+                "academic-db" => ("Cơ sở dữ liệu học vụ", "NỘI BỘ · 5432"),
+                "registration-db" => ("Cơ sở dữ liệu đăng ký", "NỘI BỘ · 5432"),
+                "identity-service" => ("Dịch vụ tài khoản", "NỘI BỘ · 3101"),
+                "academic-service" => ("Dịch vụ học vụ", "NỘI BỘ · 3102"),
+                "registration-service" => ("Dịch vụ đăng ký", "NỘI BỘ · 3103"),
+                "api-gateway" => ("Cổng API", "NỘI BỘ · 3100"),
+                _ => ("Giao diện web", $"{WebHostPort} → 80"),
             };
             return new ServiceStatus(id, display.Item1, display.Item2, running, health, found.Count);
         }).ToArray();
