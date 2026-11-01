@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Drawing.Drawing2D;
 
 namespace Qldetai.ServiceManager;
@@ -41,7 +41,7 @@ internal sealed class MainForm : Form
         Size = new Size(1000, 720);
         BackColor = Paper;
         ForeColor = Ink;
-        Font = new Font("Segoe UI", 10F, FontStyle.Regular, GraphicsUnit.Point);
+        Font = new Font("Arial", 10F, FontStyle.Regular, GraphicsUnit.Point);
         AutoScaleMode = AutoScaleMode.Dpi;
         DoubleBuffered = true;
 
@@ -95,14 +95,14 @@ internal sealed class MainForm : Form
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Ink,
-            Font = new Font("Consolas", 9.5F, FontStyle.Bold),
+            Font = new Font("Arial", 9.5F, FontStyle.Bold),
         };
         _dockerState.Text = "●  ĐANG KIỂM TRA DOCKER";
         _dockerState.Dock = DockStyle.Right;
         _dockerState.AutoSize = true;
         _dockerState.TextAlign = ContentAlignment.MiddleRight;
         _dockerState.ForeColor = Ink;
-        _dockerState.Font = new Font("Consolas", 9F, FontStyle.Regular);
+        _dockerState.Font = new Font("Arial", 9F, FontStyle.Regular);
         bar.Controls.Add(_dockerState);
         bar.Controls.Add(mark);
         return bar;
@@ -116,7 +116,7 @@ internal sealed class MainForm : Form
             Text = "QUẢN LÝ DỊCH VỤ",
             Location = new Point(0, 1),
             Size = new Size(360, 28),
-            Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold),
+            Font = new Font("Arial", 17F, FontStyle.Bold),
             ForeColor = Color.White,
         };
         var description = new Label
@@ -125,7 +125,7 @@ internal sealed class MainForm : Form
             Location = new Point(2, 30),
             Size = new Size(540, 18),
             ForeColor = Muted,
-            Font = new Font("Segoe UI", 9F),
+            Font = new Font("Arial", 9F),
         };
         intro.Controls.Add(title);
         intro.Controls.Add(description);
@@ -140,7 +140,7 @@ internal sealed class MainForm : Form
             BackColor = SoftPaper,
             Padding = new Padding(14),
         };
-        panel.Paint += (_, e) => ControlPaint.DrawBorder(e.Graphics, panel.ClientRectangle, Rule, ButtonBorderStyle.Solid);
+        panel.Paint += (_, e) => DrawRoundedBorder(e.Graphics, panel.ClientRectangle, Rule, 14);
 
         var eyebrow = Eyebrow("00   /   KHỞI TẠO MÔI TRƯỜNG");
         eyebrow.Location = new Point(16, 11);
@@ -148,13 +148,13 @@ internal sealed class MainForm : Form
         _setupTitle.Text = "Đang chuẩn bị môi trường…";
         _setupTitle.Location = new Point(16, 34);
         _setupTitle.Size = new Size(560, 30);
-        _setupTitle.Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold);
+        _setupTitle.Font = new Font("Arial", 16F, FontStyle.Bold);
         _setupTitle.ForeColor = Ink;
         _setupMessage.Text = "Khởi tạo cấu hình và bật toàn bộ dịch vụ.";
         _setupMessage.Location = new Point(17, 68);
         _setupMessage.Size = new Size(560, 36);
         _setupMessage.ForeColor = Muted;
-        _setupMessage.Font = new Font("Segoe UI", 9.5F);
+        _setupMessage.Font = new Font("Arial", 9.5F);
 
         _progress.Location = new Point(17, 108);
         _progress.Size = new Size(500, 6);
@@ -189,7 +189,7 @@ internal sealed class MainForm : Form
             Text = "DỊCH VỤ",
             Location = new Point(0, 10),
             Size = new Size(200, 24),
-            Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
+            Font = new Font("Arial", 11F, FontStyle.Bold),
             ForeColor = Ink,
         };
         ConfigureButton(_openWebButton, "MỞ ỨNG DỤNG", false);
@@ -236,7 +236,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(0),
             BackColor = SoftPaper,
         };
-        card.Paint += (_, e) => ControlPaint.DrawBorder(e.Graphics, card.ClientRectangle, Rule, ButtonBorderStyle.Solid);
+        card.Paint += (_, e) => DrawRoundedBorder(e.Graphics, card.ClientRectangle, Rule, 12);
 
         var role = Eyebrow(service.Id switch
         {
@@ -247,21 +247,21 @@ internal sealed class MainForm : Form
         });
         role.Location = new Point(14, 43);
         role.Size = new Size(145, 16);
-        role.Font = new Font("Consolas", 7.5F, FontStyle.Bold);
+        role.Font = new Font("Arial", 7.5F, FontStyle.Bold);
         var status = new Label
         {
             Text = "●  ĐANG TẮT",
             Location = new Point(265, 12),
             Size = new Size(160, 17),
             ForeColor = Fault,
-            Font = new Font("Consolas", 8F, FontStyle.Bold),
+            Font = new Font("Arial", 8F, FontStyle.Bold),
         };
         var title = new Label
         {
             Text = service.Name,
             Location = new Point(14, 9),
             Size = new Size(245, 26),
-            Font = new Font("Segoe UI Semibold", 12F, FontStyle.Bold),
+            Font = new Font("Arial", 12F, FontStyle.Bold),
             ForeColor = Color.White,
         };
         var port = new Label
@@ -270,7 +270,7 @@ internal sealed class MainForm : Form
             Location = new Point(164, 43),
             Size = new Size(140, 16),
             ForeColor = Muted,
-            Font = new Font("Consolas", 7.5F),
+            Font = new Font("Arial", 7.5F),
         };
         var toggle = new Button
         {
@@ -281,7 +281,7 @@ internal sealed class MainForm : Form
             BackColor = Paper,
             ForeColor = Ink,
             Cursor = Cursors.Hand,
-            Font = new Font("Segoe UI", 8.5F, FontStyle.Bold),
+            Font = new Font("Arial", 8.5F, FontStyle.Bold),
             Tag = service.Id,
         };
         toggle.FlatAppearance.BorderColor = Rule;
@@ -301,14 +301,14 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Left,
             AutoSize = true,
             ForeColor = Muted,
-            Font = new Font("Consolas", 8F),
+            Font = new Font("Arial", 8F),
         };
         _log.Text = "Sẵn sàng khởi chạy.";
         _log.Dock = DockStyle.Right;
         _log.AutoSize = true;
         _log.TextAlign = ContentAlignment.MiddleRight;
         _log.ForeColor = Muted;
-        _log.Font = new Font("Segoe UI", 8.5F);
+        _log.Font = new Font("Arial", 8.5F);
         footer.Controls.Add(_log);
         footer.Controls.Add(note);
         return footer;
@@ -429,11 +429,28 @@ internal sealed class MainForm : Form
         _ => "ĐANG KHỞI ĐỘNG",
     };
 
+    private static void DrawRoundedBorder(Graphics graphics, Rectangle bounds, Color color, int radius)
+    {
+        bounds.Width -= 1;
+        bounds.Height -= 1;
+        using var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, radius, radius, 180, 90);
+        path.AddArc(bounds.Right - radius, bounds.Top, radius, radius, 270, 90);
+        path.AddArc(bounds.Right - radius, bounds.Bottom - radius, radius, radius, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - radius, radius, radius, 90, 90);
+        path.CloseFigure();
+        var smoothing = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var pen = new Pen(color);
+        graphics.DrawPath(pen, path);
+        graphics.SmoothingMode = smoothing;
+    }
+
     private static Label Eyebrow(string text) => new()
     {
         Text = text,
         ForeColor = Muted,
-        Font = new Font("Consolas", 8F, FontStyle.Bold),
+        Font = new Font("Arial", 8F, FontStyle.Bold),
         AutoEllipsis = true,
     };
 
@@ -446,7 +463,7 @@ internal sealed class MainForm : Form
         button.BackColor = isPrimary ? Ink : SoftPaper;
         button.ForeColor = isPrimary ? Paper : Ink;
         button.Cursor = Cursors.Hand;
-        button.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        button.Font = new Font("Arial", 9F, FontStyle.Bold);
     }
 
     private static void OpenLocalPage(string url)
@@ -468,7 +485,7 @@ internal sealed class MainForm : Form
             ClientSize = new Size(570, 330);
             BackColor = Paper;
             ForeColor = Ink;
-            Font = new Font("Segoe UI", 9.5F);
+            Font = new Font("Arial", 9.5F);
 
             var eyebrow = Eyebrow("CHỈ HIỆN MỘT LẦN");
             eyebrow.Location = new Point(24, 20);
@@ -478,7 +495,7 @@ internal sealed class MainForm : Form
                 Text = "Lưu thông tin đăng nhập",
                 Location = new Point(24, 48),
                 Size = new Size(510, 38),
-                Font = new Font("Georgia", 21F),
+                Font = new Font("Arial", 21F),
                 UseCompatibleTextRendering = true,
             };
             var note = new Label
@@ -511,7 +528,7 @@ internal sealed class MainForm : Form
             BorderStyle = BorderStyle.FixedSingle,
             BackColor = White,
             ForeColor = Ink,
-            Font = new Font("Consolas", 10F),
+            Font = new Font("Arial", 10F),
             Size = new Size(510, 32),
         };
     }
