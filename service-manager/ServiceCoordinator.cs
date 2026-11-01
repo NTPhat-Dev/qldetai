@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -148,18 +149,31 @@ internal sealed class ServiceCoordinator
 
     private async Task EnsureDockerAsync(IProgress<string> progress, CancellationToken cancellationToken)
     {
+        var desktop = FindDockerDesktop();
+        var desktopRunning = IsDockerDesktopRunning();
+        if (!desktopRunning && desktop is not null)
+        {
+            progress.Report("Docker Desktop chưa mở; đang tự khởi động ứng dụng…");
+            try
+            {
+                Process.Start(new ProcessStartInfo(desktop) { UseShellExecute = true });
+                desktopRunning = true;
+            }
+            catch (Exception error)
+            {
+                throw new InvalidOperationException($"Không mở được Docker Desktop tại {desktop}. Hãy mở Docker Desktop rồi chọn Thử lại.", error);
+            }
+        }
+
         var info = await TryDockerInfoAsync(cancellationToken);
         if (info.Available) return;
         if (IsManuallyPaused(info.Error))
             throw new InvalidOperationException("Docker Desktop đang tạm dừng. Hãy chọn biểu tượng cá voi Docker ở khay hệ thống, bỏ tạm dừng, rồi bấm Thử lại.");
-
-        var desktop = FindDockerDesktop();
-        if (desktop is null)
+        if (!desktopRunning && desktop is null)
             throw new InvalidOperationException("Không tìm thấy Docker Desktop. Hãy cài Docker Desktop, mở ứng dụng một lần, rồi bấm Thử lại.");
 
-        progress.Report("Đang mở Docker Desktop và chờ engine sẵn sàng…");
-        Process.Start(new ProcessStartInfo(desktop) { UseShellExecute = true });
-        for (var attempt = 0; attempt < 90; attempt++)
+        progress.Report("Đang chờ Docker Desktop khởi động engine…");
+        for (var attempt = 0; attempt < 180; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
@@ -167,6 +181,7 @@ internal sealed class ServiceCoordinator
             if (info.Available) return;
             if (IsManuallyPaused(info.Error))
                 throw new InvalidOperationException("Docker Desktop đang tạm dừng. Hãy bỏ tạm dừng từ biểu tượng Docker trên khay hệ thống, rồi bấm Thử lại.");
+            if (attempt % 10 == 9) progress.Report($"Đang chờ Docker Desktop sẵn sàng… ({(attempt + 1) * 2} giây)");
         }
         throw new InvalidOperationException("Docker Desktop chưa sẵn sàng sau thời gian chờ. Mở Docker Desktop rồi bấm Thử lại.");
     }
@@ -186,12 +201,29 @@ internal sealed class ServiceCoordinator
 
     private static string? FindDockerDesktop()
     {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var candidates = new[]
         {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Docker", "Docker", "Docker Desktop.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Docker", "Docker", "Docker Desktop.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Docker", "Docker", "frontend", "Docker Desktop.exe"),
+            Path.Combine(localAppData, "Programs", "Docker", "Docker", "Docker Desktop.exe"),
+            Path.Combine(localAppData, "Programs", "DockerDesktop", "Docker Desktop.exe"),
+            Path.Combine(localAppData, "Programs", "DockerDesktop", "frontend", "Docker Desktop.exe"),
         };
         return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static bool IsDockerDesktopRunning()
+    {
+        foreach (var process in Process.GetProcessesByName("Docker Desktop"))
+        {
+            using (process)
+            {
+                try { if (!process.HasExited) return true; }
+                catch (InvalidOperationException) { }
+            }
+        }
+        return false;
     }
 
     private async Task WaitUntilHealthyAsync(IProgress<string> progress, bool externalWeb, CancellationToken cancellationToken)
