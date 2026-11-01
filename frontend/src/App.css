@@ -385,6 +385,7 @@ td { border-color: #edf0f5; color: #667085; font-size: 12px; }
 .portal-row { border-color: #edf0f5; color: #667085; font-size: 12px; }
 .portal-row strong { color: #25334a; font-size: 13px; }
 .portal-row em,.portal-row small { color: #778399; font-size: 11px; }
+.portal-row em.pending-status { padding: 5px 9px; border: 1px solid #fed7aa; border-radius: 999px; background: #fff7ed; color: #b45309; font-style: normal; white-space: nowrap; }
 .account-form input,.account-form select,.department-form input,.topic-create-form input,.topic-create-form textarea,.topic-card form input,.round-form input,.personal-profile-form input,.settings-form input,.settings-inline-form input { min-height: 40px; border-color: #d8e0ec; border-radius: 9px; background: #fff; color: #172033; font-size: 12px; }
 .account-form label,.round-form label,.topic-create-form label,.personal-profile-form label,.settings-form label { color: #536176; font-size: 12px; }
 .account-list { border-color: #edf0f5; }

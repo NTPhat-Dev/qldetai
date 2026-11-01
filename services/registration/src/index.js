@@ -1,6 +1,7 @@
 import { createApp } from '../../shared/create-app.js'
 import { createDatabasePool } from '../../shared/database.js'
 import jwt from 'jsonwebtoken'
+import { randomUUID } from 'node:crypto'
 
 const pool = createDatabasePool('registration')
 const app = createApp({ name: 'registration', pool })
@@ -54,6 +55,10 @@ app.use(async (ctx) => {
   if (ctx.method === 'POST' && ctx.path === '/api/portal/registrations') {
     if (ctx.state.user.role !== 'SINH_VIEN') ctx.throw(403, 'Chỉ sinh viên được gửi đăng ký.')
     const { topicId, roundId, reason } = ctx.request.body ?? {}
+    const requestId = ctx.request.body?.requestId ?? randomUUID()
+    if (typeof requestId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) ctx.throw(400, 'Mã yêu cầu đăng ký không hợp lệ.')
+    const previous = await pool.query('SELECT id,status FROM registration.registrations WHERE id=$1 AND student_id=$2', [requestId,ctx.state.user.sub])
+    if (previous.rowCount) { ctx.status = 200; ctx.body = previous.rows[0]; return }
     const [user, available] = await Promise.all([
       fetch(`http://identity-service:3101/internal/v1/identity/users/${ctx.state.user.sub}`).then((response) => response.json()),
       fetch('http://academic-service:3102/internal/v1/academic/student-topics').then((response) => response.json()),
@@ -65,12 +70,16 @@ app.use(async (ctx) => {
       await client.query('BEGIN')
       // Serialize requests for the same topic/round so the last seat cannot be oversold.
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${topicId}:${roundId}`])
+      const replay = await client.query('SELECT id,status FROM registration.registrations WHERE id=$1 AND student_id=$2', [requestId,ctx.state.user.sub])
+      if (replay.rowCount) {
+        await client.query('COMMIT'); ctx.status = 200; ctx.body = replay.rows[0]; return
+      }
       const existing = await client.query("SELECT 1 FROM registration.registrations WHERE student_id=$1 AND round_id=$2 AND status IN ('CHO_DUYET','DA_DUYET')", [ctx.state.user.sub,roundId])
       if (existing.rowCount) ctx.throw(409, 'Bạn đã có đăng ký hiệu lực trong đợt này.')
       const count = await client.query("SELECT count(*)::int AS total FROM registration.registrations WHERE topic_id=$1 AND round_id=$2 AND status IN ('CHO_DUYET','DA_DUYET')", [topicId,roundId])
       if (topic.capacity != null && count.rows[0].total >= topic.capacity) ctx.throw(409, 'Đề tài đã đủ sức chứa.')
-      const result = await client.query(`INSERT INTO registration.registrations(student_id,topic_id,round_id,topic_code,topic_title,student_code,student_name,round_code,reason)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,status`, [ctx.state.user.sub,topicId,roundId,topic.code,topic.title,user.profile_code,user.display_name,topic.round_code,reason?.trim()||null])
+      const result = await client.query(`INSERT INTO registration.registrations(id,student_id,topic_id,round_id,topic_code,topic_title,student_code,student_name,round_code,reason)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,status`, [requestId,ctx.state.user.sub,topicId,roundId,topic.code,topic.title,user.profile_code,user.display_name,topic.round_code,reason?.trim()||null])
       await client.query('COMMIT'); ctx.status = 201; ctx.body = result.rows[0]
     } catch (error) { await client.query('ROLLBACK').catch(() => {}); if (error.code === '23505') ctx.throw(409, 'Bạn đã có đăng ký hiệu lực trong đợt này.'); throw error } finally { client.release() }
     return
