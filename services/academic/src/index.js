@@ -1,7 +1,7 @@
 import { createApp } from '../../shared/create-app.js'
 import { createDatabasePool } from '../../shared/database.js'
 import jwt from 'jsonwebtoken'
-import { randomInt } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 
 const pool = createDatabasePool('academic')
 const app = createApp({ name: 'academic', pool })
@@ -84,11 +84,24 @@ app.use(async (ctx) => {
     ctx.body = result.rows[0]; return
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/topics') {
-    const { code,title,description,opensAt,closesAt,capacity } = ctx.request.body ?? {}
-    if (!code?.trim() || !title?.trim() || !opensAt || !closesAt || new Date(opensAt)>=new Date(closesAt)) ctx.throw(400, 'Nhập mã, tên và thời hạn đề tài hợp lệ.')
+    const { title,description,opensAt,closesAt,capacity } = ctx.request.body ?? {}
+    const opensTime = Date.parse(opensAt)
+    const closesTime = Date.parse(closesAt)
+    const numericCapacity = Number(capacity)
+    if (typeof title !== 'string' || !title.trim() || !opensAt || !closesAt || !Number.isFinite(opensTime) || !Number.isFinite(closesTime) || opensTime >= closesTime) ctx.throw(400, 'Nhập tên và thời hạn đề tài hợp lệ.')
+    if (capacity == null || String(capacity).trim() === '' || !Number.isSafeInteger(numericCapacity) || numericCapacity < 1) ctx.throw(400, 'Số lượng phải là số nguyên từ 1 trở lên.')
     const profile = await fetch(`http://identity-service:3101/internal/v1/identity/users/${ctx.state.user.sub}`, { headers: { authorization: ctx.get('authorization') } }).then((response) => response.json())
     if (!profile.department_id) ctx.throw(403, 'Tài khoản chưa có khoa.')
-    const result = await pool.query('INSERT INTO academic.topics(code,title,description,lecturer_id,department_id,opens_at,closes_at,capacity) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,code,title,published', [code.trim(),title.trim(),description?.trim()||null,ctx.state.user.sub,profile.department_id,opensAt,closesAt,capacity===''||capacity==null?null:Number(capacity)])
+    let result
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const code = `DE-${randomBytes(6).toString('hex').toUpperCase()}`
+      try {
+        result = await pool.query('INSERT INTO academic.topics(code,title,description,lecturer_id,department_id,opens_at,closes_at,capacity) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,code,title,published', [code,title.trim(),typeof description === 'string' ? description.trim() || null : null,ctx.state.user.sub,profile.department_id,opensAt,closesAt,numericCapacity])
+        break
+      } catch (error) {
+        if (error.code !== '23505' || attempt === 4) throw error
+      }
+    }
     ctx.status = 201; ctx.body = result.rows[0]; return
   }
   const publication = ctx.path.match(/^\/api\/portal\/topics\/([^/]+)\/publication$/)

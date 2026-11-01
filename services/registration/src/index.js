@@ -63,6 +63,7 @@ app.use(async (ctx) => {
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
+      // Serialize requests for the same topic/round so the last seat cannot be oversold.
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${topicId}:${roundId}`])
       const existing = await client.query("SELECT 1 FROM registration.registrations WHERE student_id=$1 AND round_id=$2 AND status IN ('CHO_DUYET','DA_DUYET')", [ctx.state.user.sub,roundId])
       if (existing.rowCount) ctx.throw(409, 'Bạn đã có đăng ký hiệu lực trong đợt này.')
@@ -71,7 +72,7 @@ app.use(async (ctx) => {
       const result = await client.query(`INSERT INTO registration.registrations(student_id,topic_id,round_id,topic_code,topic_title,student_code,student_name,round_code,reason)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,status`, [ctx.state.user.sub,topicId,roundId,topic.code,topic.title,user.profile_code,user.display_name,topic.round_code,reason?.trim()||null])
       await client.query('COMMIT'); ctx.status = 201; ctx.body = result.rows[0]
-    } catch (error) { await client.query('ROLLBACK'); if (error.code === '23505') ctx.throw(409, 'Bạn đã có đăng ký hiệu lực trong đợt này.'); throw error } finally { client.release() }
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); if (error.code === '23505') ctx.throw(409, 'Bạn đã có đăng ký hiệu lực trong đợt này.'); throw error } finally { client.release() }
     return
   }
   const cancel = ctx.path.match(/^\/api\/portal\/registrations\/([0-9a-f-]+)\/cancel$/i)

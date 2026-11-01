@@ -2,15 +2,21 @@ import Koa from 'koa'
 import cors from '@koa/cors'
 import { bodyParser } from '@koa/bodyparser'
 
+const databaseUnavailable = (error) =>
+  error.code?.startsWith('08')
+  || ['ECONNREFUSED','ECONNRESET','ETIMEDOUT','EHOSTUNREACH','ENETUNREACH','EPIPE','57P01','57P02','57P03','53300'].includes(error.code)
+
 export function createApp({ name, pool = null, readiness = null }) {
   const app = new Koa()
   app.use(async (ctx, next) => {
     try {
       await next()
     } catch (error) {
-      const status = error.status ?? (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', '57P01', '08006'].includes(error.code) ? 503 : 500)
+      const dbUnavailable = databaseUnavailable(error)
+      const status = error.status ?? (dbUnavailable ? 503 : 500)
+      if (dbUnavailable) ctx.set('Retry-After', '3')
       ctx.status = status
-      ctx.body = { error: status === 500 ? 'Lỗi dịch vụ nội bộ.' : error.message }
+      ctx.body = { error: status === 500 ? 'Lỗi dịch vụ nội bộ.' : dbUnavailable ? 'Kết nối cơ sở dữ liệu đang gián đoạn. Vui lòng thử lại sau ít phút.' : error.message }
       if (status >= 500) console.error(`[${name}] request failed:`, error)
     }
   })

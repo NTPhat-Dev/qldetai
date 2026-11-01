@@ -40,7 +40,7 @@ CREATE TABLE academic.topics (
   department_id uuid NOT NULL REFERENCES academic.departments(id),
   opens_at timestamptz NOT NULL,
   closes_at timestamptz NOT NULL,
-  capacity integer CHECK(capacity IS NULL OR capacity>0),
+  capacity integer NOT NULL CHECK(capacity>0),
   published boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK(opens_at<closes_at)
