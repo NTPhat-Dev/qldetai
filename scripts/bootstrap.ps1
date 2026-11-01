@@ -1,6 +1,10 @@
 ﻿param([switch]$InstallWsl, [switch]$CheckOnly)
 
 $ErrorActionPreference = 'Stop'
+$logDirectory = Join-Path $env:LOCALAPPDATA 'QLDeTai'
+New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+$script:bootstrapLog = Join-Path $logDirectory 'bootstrap.log'
+try { Start-Transcript -Path $script:bootstrapLog -Append -Force | Out-Null } catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $managerProject = Join-Path $projectRoot 'service-manager\ServiceManager.csproj'
 
@@ -95,7 +99,8 @@ try {
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-InstallWsl')
     $elevated = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
     if ($elevated.ExitCode -ne 0) { throw 'Không cài được WSL 2.' }
-    throw 'Đã cài WSL 2. Hãy khởi động lại Windows rồi chạy lại start-service-manager.cmd để tiếp tục.'
+    Write-Host 'WSL 2 đã được bật. Hãy khởi động lại Windows, sau đó chạy lại start-service-manager.cmd.' -ForegroundColor Yellow
+    exit 2
   }
 
   if (-not (Find-DockerDesktop)) { Install-WithWinget 'Docker.DockerDesktop' }
@@ -108,9 +113,17 @@ try {
   }
 
   Write-Host 'Đang mở trình quản lý và chuẩn bị các dịch vụ...' -ForegroundColor Green
-  & dotnet run --project $managerProject
-  exit $LASTEXITCODE
+  $managerOutput = & dotnet run --project $managerProject 2>&1
+  $managerExitCode = $LASTEXITCODE
+  foreach ($line in $managerOutput) {
+    Write-Host $line
+  }
+  if ($managerExitCode -ne 0) {
+    throw "Trình quản lý không khởi chạy được (mã $managerExitCode). Xem nhật ký để biết lỗi chi tiết."
+  }
+  exit 0
 } catch {
   Write-Host $_.Exception.Message -ForegroundColor Red
+  Write-Host "Nhật ký cài đặt: $script:bootstrapLog" -ForegroundColor Yellow
   exit 1
 }
