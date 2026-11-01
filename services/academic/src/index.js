@@ -16,9 +16,15 @@ const claims = (ctx, roles) => {
 const initials = (name) => name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean).map((word) => word[0]).join('').slice(0, 8)
 
 app.use(async (ctx) => {
-  if (ctx.path.startsWith('/api/admin/') || ctx.path.startsWith('/api/portal/topics')) {
+  if (ctx.path.startsWith('/api/admin/') || ctx.path.startsWith('/api/portal/topics') || ctx.path === '/api/portal/rounds') {
     const user = claims(ctx, ctx.path.startsWith('/api/portal/') ? ['GIANG_VIEN'] : ['QUAN_TRI'])
     ctx.state.user = user
+  }
+  if (ctx.method === 'GET' && ctx.path === '/api/portal/rounds') {
+    ctx.body = (await pool.query(`SELECT r.id,r.code,r.opens_at,r.closes_at,r.is_open,s.code AS semester_code,s.name AS semester_name
+      FROM academic.rounds r JOIN academic.semesters s ON s.id=r.semester_id
+      WHERE r.closes_at>clock_timestamp() ORDER BY r.opens_at DESC`)).rows
+    return
   }
   if (ctx.method === 'GET' && ctx.path === '/api/admin/departments') {
     ctx.body = (await pool.query('SELECT id,code,name FROM academic.departments ORDER BY name')).rows
@@ -84,23 +90,28 @@ app.use(async (ctx) => {
     ctx.body = result.rows[0]; return
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/topics') {
-    const { title,description,opensAt,closesAt,capacity } = ctx.request.body ?? {}
-    const opensTime = Date.parse(opensAt)
-    const closesTime = Date.parse(closesAt)
+    const { title,description,roundId,capacity } = ctx.request.body ?? {}
     const numericCapacity = Number(capacity)
-    if (typeof title !== 'string' || !title.trim() || !opensAt || !closesAt || !Number.isFinite(opensTime) || !Number.isFinite(closesTime) || opensTime >= closesTime) ctx.throw(400, 'Nhập tên và thời hạn đề tài hợp lệ.')
+    if (typeof title !== 'string' || !title.trim() || typeof roundId !== 'string') ctx.throw(400, 'Nhập tên đề tài và chọn đợt đăng ký.')
     if (capacity == null || String(capacity).trim() === '' || !Number.isSafeInteger(numericCapacity) || numericCapacity < 1) ctx.throw(400, 'Số lượng phải là số nguyên từ 1 trở lên.')
+    const roundResult = await pool.query('SELECT id,code,opens_at,closes_at FROM academic.rounds WHERE id=$1 AND closes_at>clock_timestamp()', [roundId])
+    if (!roundResult.rowCount) ctx.throw(400, 'Đợt đăng ký không tồn tại hoặc đã hết hạn.')
     const profile = await fetch(`http://identity-service:3101/internal/v1/identity/users/${ctx.state.user.sub}`, { headers: { authorization: ctx.get('authorization') } }).then((response) => response.json())
     if (!profile.department_id) ctx.throw(403, 'Tài khoản chưa có khoa.')
     let result
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = `DE-${randomBytes(6).toString('hex').toUpperCase()}`
+      const client = await pool.connect()
       try {
-        result = await pool.query('INSERT INTO academic.topics(code,title,description,lecturer_id,department_id,opens_at,closes_at,capacity) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,code,title,published', [code,title.trim(),typeof description === 'string' ? description.trim() || null : null,ctx.state.user.sub,profile.department_id,opensAt,closesAt,numericCapacity])
+        await client.query('BEGIN')
+        result = await client.query('INSERT INTO academic.topics(code,title,description,lecturer_id,department_id,opens_at,closes_at,capacity) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,code,title,published', [code,title.trim(),typeof description === 'string' ? description.trim() || null : null,ctx.state.user.sub,profile.department_id,roundResult.rows[0].opens_at,roundResult.rows[0].closes_at,numericCapacity])
+        await client.query('INSERT INTO academic.topic_round_windows(topic_id,round_id,opens_at,closes_at,allowed) VALUES($1,$2,$3,$4,true)', [result.rows[0].id,roundResult.rows[0].id,roundResult.rows[0].opens_at,roundResult.rows[0].closes_at])
+        await client.query('COMMIT')
         break
       } catch (error) {
+        await client.query('ROLLBACK').catch(() => {})
         if (error.code !== '23505' || attempt === 4) throw error
-      }
+      } finally { client.release() }
     }
     ctx.status = 201; ctx.body = result.rows[0]; return
   }
@@ -136,7 +147,10 @@ app.use(async (ctx) => {
       LEAST(t.closes_at,r.closes_at,COALESCE(w.closes_at,'infinity'::timestamptz)) AS effective_closes_at
       FROM academic.topics t JOIN academic.departments d ON d.id=t.department_id JOIN academic.rounds r ON r.is_open
       LEFT JOIN academic.topic_round_windows w ON w.topic_id=t.id AND w.round_id=r.id
-      WHERE t.published AND (w.topic_id IS NULL OR w.allowed)
+      WHERE t.published AND (
+        NOT EXISTS (SELECT 1 FROM academic.topic_round_windows scoped WHERE scoped.topic_id=t.id)
+        OR (w.topic_id IS NOT NULL AND w.allowed)
+      )
       AND clock_timestamp()>=GREATEST(t.opens_at,r.opens_at,COALESCE(w.opens_at,'-infinity'::timestamptz))
       AND clock_timestamp()<LEAST(t.closes_at,r.closes_at,COALESCE(w.closes_at,'infinity'::timestamptz)) ORDER BY t.created_at DESC LIMIT 100`)
     ctx.body = result.rows
@@ -144,7 +158,9 @@ app.use(async (ctx) => {
   }
   const lecturerTopics = ctx.path.match(/^\/internal\/v1\/academic\/lecturers\/([0-9a-f-]+)\/topics$/i)
   if (ctx.method === 'GET' && lecturerTopics) {
-    const topics = (await pool.query('SELECT id,code,title,description,published,opens_at,closes_at,capacity FROM academic.topics WHERE lecturer_id=$1 ORDER BY created_at DESC', [lecturerTopics[1]])).rows
+    const topics = (await pool.query(`SELECT t.id,t.code,t.title,t.description,t.published,t.opens_at,t.closes_at,t.capacity,
+      (SELECT string_agg(r.code, ', ' ORDER BY r.opens_at) FROM academic.topic_round_windows w JOIN academic.rounds r ON r.id=w.round_id WHERE w.topic_id=t.id) AS round_codes
+      FROM academic.topics t WHERE t.lecturer_id=$1 ORDER BY t.created_at DESC`, [lecturerTopics[1]])).rows
     ctx.body = await Promise.all(topics.map(async (topic) => {
       const counts = await fetch(`http://registration-service:3103/internal/v1/registrations/topics/${topic.id}/counts`).then((response) => response.json()).catch(() => ({ pending: 0, registered: 0 }))
       return { ...topic, ...counts }

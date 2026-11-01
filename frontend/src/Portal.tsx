@@ -5,7 +5,7 @@ import PersonalSettings from './PersonalSettings'
 type Topic = {
   id: string; code: string; title: string; description?: string; lecturer?: string; department?: string
   published?: boolean; pending?: number; registered?: number; capacity?: number | null
-  round_id?: string; round_code?: string; opens_at?: string; closes_at?: string
+  round_id?: string; round_code?: string; round_codes?: string; opens_at?: string; closes_at?: string
 }
 type Registration = {
   id: string; code?: string; title?: string; status: string; round_id?: string; submitted_at?: string
@@ -16,6 +16,7 @@ type PendingRegistration = {
   requestId: string; topicId: string; roundId: string; topicCode: string; topicTitle: string
   roundCode: string; reason: string; createdAt: string
 }
+type RegistrationRound = { id: string; code: string; opens_at: string; closes_at: string; is_open: boolean; semester_code: string; semester_name: string }
 type PortalData = {
   role: 'SINH_VIEN' | 'GIANG_VIEN'
   profile: { ho_ten: string; ma_sinh_vien?: string; ma_giang_vien?: string; lop?: string } | null
@@ -45,6 +46,8 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   const dataCacheKey = `qldetai:portal-cache:${subject}`
   const outboxKey = `qldetai:registration-outbox:${subject}`
   const [data, setData] = useState<PortalData | null>(() => readSessionValue<PortalData>(dataCacheKey))
+  const [rounds, setRounds] = useState<RegistrationRound[]>([])
+  const [roundsError, setRoundsError] = useState('')
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>(() => readLocalList<PendingRegistration>(outboxKey))
   const pendingRef = useRef(pendingRegistrations)
   const syncingRef = useRef(false)
@@ -85,6 +88,19 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
       } else setError(reason.message)
     })
   }, [dataCacheKey, reload])
+
+  useEffect(() => {
+    if (data?.role !== 'GIANG_VIEN') return
+    let cancelled = false
+    fetch(`${API}/portal/rounds`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (response) => {
+        const result = await response.json().catch(() => [])
+        if (!response.ok) throw new Error(result.error ?? 'Không tải được các đợt đăng ký.')
+        if (!cancelled) { setRounds(result as RegistrationRound[]); setRoundsError('') }
+      })
+      .catch((reason: Error) => { if (!cancelled) setRoundsError(reason.message) })
+    return () => { cancelled = true }
+  }, [data?.role, token])
 
   const savePending = useCallback((next: PendingRegistration[]) => {
     pendingRef.current = next
@@ -168,7 +184,7 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
     event.preventDefault()
     const form = event.currentTarget
     const values = Object.fromEntries(new FormData(form).entries())
-    const payload = { ...values, opensAt: new Date(String(values.opensAt)).toISOString(), closesAt: new Date(String(values.closesAt)).toISOString() }
+    const payload = values
     if (await submit('/portal/topics', 'POST', payload)) form.reset()
   }
 
@@ -219,7 +235,21 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
           </section>
           <section className="portal-section" id="registrations"><h2>Lịch sử đăng ký</h2><div className="portal-table">{visibleRegistrations.length ? visibleRegistrations.map((item) => <div className="portal-row" key={item.id}><span>{item.code}</span><strong>{item.title}</strong><em className={item.status === 'DANG_CHO_XU_LY' ? 'pending-status' : undefined}>{statusNames[item.status] ?? item.status}</em><small>{localDateTime(item.submitted_at)}</small>{item.status === 'CHO_DUYET' && <button className="outline-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/cancel`, 'PATCH')}>Hủy đơn</button>}</div>) : <div className="portal-empty">Bạn chưa gửi đăng ký đề tài nào.</div>}</div></section>
         </> : <>
-          <section className="portal-section" id="my-topics"><div className="portal-section-head"><div><h2>Đề tài của tôi</h2><p>Tạo bản nháp, sau đó công bố để sinh viên có thể đăng ký</p></div></div><form className="topic-create-form" onSubmit={createTopic}><div className="generated-code-note"><span>MÃ ĐỀ TÀI</span><strong>Tự sinh khi lưu</strong></div><label>Tên đề tài<input name="title" required maxLength={240}/></label><label className="topic-description-field">Mô tả<textarea name="description" rows={3}/></label><label>Mở đăng ký<input name="opensAt" type="datetime-local" required/></label><label>Đóng đăng ký<input name="closesAt" type="datetime-local" required/></label><label>Số lượng<input name="capacity" type="number" min="1" step="1" required/></label><button className="dark-button" disabled={busy}>Tạo bản nháp</button></form><div className="portal-table">{data.topics.length ? data.topics.map((topic) => <div className="portal-row" key={topic.id}><span>{topic.code}</span><strong>{topic.title}</strong><em>{topic.pending ?? 0} chờ duyệt · {topic.registered ?? 0} đang hiệu lực</em><small>{topic.published ? 'Đã công bố' : 'Bản nháp'}</small><button className="outline-button" disabled={busy || (!topic.published && Boolean(topic.registered))} onClick={() => void submit(`/portal/topics/${topic.id}/publication`, 'PATCH', { published: !topic.published })}>{topic.published ? 'Ẩn đề tài' : 'Công bố'}</button></div>) : <div className="portal-empty">Bạn chưa có đề tài hướng dẫn.</div>}</div></section>
+          <section className="portal-section" id="my-topics">
+            <div className="portal-section-head"><div><h2>Đề tài của tôi</h2><p>Tạo bản nháp, chọn đợt nhận đăng ký do quản trị viên cấu hình</p></div></div>
+            {roundsError && <p className="account-message" role="alert">{roundsError}</p>}
+            {rounds.length === 0 && !roundsError && <p className="account-message">Chưa có đợt đăng ký còn hạn. Hãy nhờ quản trị viên tạo đợt trước.</p>}
+            <form className="topic-create-form" onSubmit={createTopic}>
+              <div className="generated-code-note"><span>MÃ ĐỀ TÀI</span><strong>Tự sinh khi lưu</strong></div>
+              <label>Tên đề tài<input name="title" required maxLength={240}/></label>
+              <label className="topic-description-field">Mô tả<textarea name="description" rows={3}/></label>
+              <label>Đợt đăng ký<select name="roundId" required disabled={rounds.length === 0}><option value="">Chọn đợt đăng ký</option>{rounds.map((round) => <option key={round.id} value={round.id}>{round.semester_code} · {round.semester_name} · {round.code} ({round.is_open ? 'Đang mở' : 'Đang đóng'}) · {localDateTime(round.opens_at)} – {localDateTime(round.closes_at)}</option>)}</select></label>
+              <label>Số lượng<input name="capacity" type="number" min="1" step="1" required/></label>
+              <button className="dark-button" disabled={busy || rounds.length === 0}>Tạo bản nháp</button>
+            </form>
+            <p className="topic-round-note">Thời gian đăng ký của đề tài sẽ theo đợt bạn chọn.</p>
+            <div className="portal-table">{data.topics.length ? data.topics.map((topic) => <div className="portal-row" key={topic.id}><span>{topic.code}{topic.round_codes ? ` · Đợt ${topic.round_codes}` : ''}</span><strong>{topic.title}</strong><em>{topic.pending ?? 0} chờ duyệt · {topic.registered ?? 0} đang hiệu lực</em><small>{topic.published ? 'Đã công bố' : 'Bản nháp'}</small><button className="outline-button" disabled={busy || (!topic.published && Boolean(topic.registered))} onClick={() => void submit(`/portal/topics/${topic.id}/publication`, 'PATCH', { published: !topic.published })}>{topic.published ? 'Ẩn đề tài' : 'Công bố'}</button></div>) : <div className="portal-empty">Bạn chưa có đề tài hướng dẫn.</div>}</div>
+          </section>
           <section className="portal-section" id="review"><h2>Đăng ký của sinh viên</h2><div className="portal-table">{registrations.length ? registrations.map((item) => <div className="portal-row review-row" key={item.id}><span>{item.student_code}</span><strong>{item.student_name} · {item.topic_title}</strong><small>Đợt {item.round_code} · {localDateTime(item.submitted_at)}</small><em>{statusNames[item.status] ?? item.status}</em>{item.status === 'CHO_DUYET' && <><button className="dark-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'DA_DUYET' })}>Duyệt</button><button className="outline-button" disabled={busy} onClick={() => { const note = window.prompt('Nhập lý do từ chối:'); if (note?.trim()) void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'TU_CHOI', note }) }}>Từ chối</button></>}</div>) : <div className="portal-empty">Chưa có đăng ký nào.</div>}</div></section>
         </>}
       </section>

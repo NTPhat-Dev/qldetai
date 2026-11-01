@@ -59,10 +59,10 @@ app.use(async (ctx) => {
     }
   }
 
-  const publicDomain = ctx.path.match(/^\/api\/(admin\/(departments(?:\/[^/]+\/classes)?|classes|rounds(?:\/[^/]+)?|accounts)|portal\/(overview|topics(?:\/[^/]+\/publication)?|registrations(?:\/[^/]+\/(?:cancel|decision))?|profile|security(?:\/.*)?))$/)
+  const publicDomain = ctx.path.match(/^\/api\/(admin\/(departments(?:\/[^/]+\/classes)?|classes|rounds(?:\/[^/]+)?|accounts)|portal\/(overview|rounds|topics(?:\/[^/]+\/publication)?|registrations(?:\/[^/]+\/(?:cancel|decision))?|profile|security(?:\/.*)?))$/)
   if (publicDomain) {
     const section = publicDomain[1]
-    const target = section.startsWith('admin/departments') || section === 'admin/classes' || section.startsWith('admin/rounds') || section.startsWith('portal/topics')
+    const target = section.startsWith('admin/departments') || section === 'admin/classes' || section.startsWith('admin/rounds') || section.startsWith('portal/topics') || section === 'portal/rounds'
       ? targets.academic
       : section.startsWith('admin/accounts') || section.startsWith('portal/profile') || section.startsWith('portal/security')
         ? targets.identity : targets.registrations

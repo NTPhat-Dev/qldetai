@@ -107,7 +107,7 @@ tr:last-child td { border-bottom: 0; }
 .account-list { border-top: 1px solid #eee; }
 .account-list h3 { margin: 18px 22px; color: #333; font-size: 13px; }
 .topic-card form { display: grid; gap: 8px; margin-top: 8px; }
-.topic-card form input,.topic-create-form input,.topic-create-form textarea { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 11px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #222; font: inherit; font-size: 11px; }
+.topic-card form input,.topic-create-form input,.topic-create-form select,.topic-create-form textarea { width: 100%; min-width: 0; min-height: 40px; box-sizing: border-box; padding: 10px 11px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #222; font: inherit; font-size: 11px; }
 .topic-create-form { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-bottom: 16px; padding: 18px; border: 1px solid #e7e7e7; border-radius: 9px; background: #fff; }
 .topic-create-form label { display: flex; flex-direction: column; gap: 6px; color: #666; font-size: 10px; font-weight: 650; }
 .topic-create-form textarea { resize: vertical; }
@@ -386,12 +386,13 @@ td { border-color: #edf0f5; color: #667085; font-size: 12px; }
 .portal-row strong { color: #25334a; font-size: 13px; }
 .portal-row em,.portal-row small { color: #778399; font-size: 11px; }
 .portal-row em.pending-status { padding: 5px 9px; border: 1px solid #fed7aa; border-radius: 999px; background: #fff7ed; color: #b45309; font-style: normal; white-space: nowrap; }
-.account-form input,.account-form select,.department-form input,.topic-create-form input,.topic-create-form textarea,.topic-card form input,.round-form input,.personal-profile-form input,.settings-form input,.settings-inline-form input { min-height: 40px; border-color: #d8e0ec; border-radius: 9px; background: #fff; color: #172033; font-size: 12px; }
+.account-form input,.account-form select,.department-form input,.topic-create-form input,.topic-create-form select,.topic-create-form textarea,.topic-card form input,.round-form input,.personal-profile-form input,.settings-form input,.settings-inline-form input { min-height: 40px; border-color: #d8e0ec; border-radius: 9px; background: #fff; color: #172033; font-size: 12px; }
 .account-form label,.round-form label,.topic-create-form label,.personal-profile-form label,.settings-form label { color: #536176; font-size: 12px; }
 .account-list { border-color: #edf0f5; }
 .account-message { margin-top: 0; }
 .department-form { border-color: #d8e0ec; border-radius: 12px; background: #fafcff; }
 .topic-create-form,.personal-profile-form,.settings-card { border: 1px solid #e4e9f1; border-radius: 14px; background: #fff; box-shadow: 0 3px 12px rgba(21,39,72,.035); }
+.topic-round-note { margin: -6px 0 16px; color: #778399; font-size: 11px; }
 .personal-settings-page > h2,.settings-card h3 { color: #172033; font-weight: 700; }
 .settings-card > p,.personal-profile-form label,.settings-form label { color: #667085; }
 .totp-setup img { border-color: #e0e6ef; border-radius: 12px; }
