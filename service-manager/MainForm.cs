@@ -5,14 +5,14 @@ namespace Qldetai.ServiceManager;
 
 internal sealed class MainForm : Form
 {
-    private static readonly Color Ink = Color.FromArgb(0, 229, 255);
+    private static readonly Color Ink = Color.FromArgb(238, 238, 238);
     private static readonly Color Paper = Color.FromArgb(5, 8, 12);
     private static readonly Color SoftPaper = Color.FromArgb(12, 18, 24);
     private static readonly Color White = Color.FromArgb(8, 13, 18);
-    private static readonly Color Muted = Color.FromArgb(127, 166, 174);
-    private static readonly Color Rule = Color.FromArgb(31, 61, 70);
-    private static readonly Color Healthy = Color.FromArgb(52, 211, 112);
-    private static readonly Color Fault = Color.FromArgb(255, 76, 92);
+    private static readonly Color Muted = Color.FromArgb(170, 170, 170);
+    private static readonly Color Rule = Color.FromArgb(65, 65, 65);
+    private static readonly Color Healthy = Color.FromArgb(245, 245, 245);
+    private static readonly Color Fault = Color.FromArgb(135, 135, 135);
 
     private readonly ServiceCoordinator _coordinator;
     private readonly Label _dockerState = new();

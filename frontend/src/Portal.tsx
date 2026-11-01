@@ -240,7 +240,6 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
             {roundsError && <p className="account-message" role="alert">{roundsError}</p>}
             {rounds.length === 0 && !roundsError && <p className="account-message">Chưa có đợt đăng ký còn hạn. Hãy nhờ quản trị viên tạo đợt trước.</p>}
             <form className="topic-create-form" onSubmit={createTopic}>
-              <div className="generated-code-note"><span>MÃ ĐỀ TÀI</span><strong>Tự sinh khi lưu</strong></div>
               <label>Tên đề tài<input name="title" required maxLength={240}/></label>
               <label className="topic-description-field">Mô tả<textarea name="description" rows={3}/></label>
               <label>Đợt đăng ký<select name="roundId" required disabled={rounds.length === 0}><option value="">Chọn đợt đăng ký</option>{rounds.map((round) => <option key={round.id} value={round.id}>{round.semester_code} · {round.semester_name} · {round.code} ({round.is_open ? 'Đang mở' : 'Đang đóng'}) · {localDateTime(round.opens_at)} – {localDateTime(round.closes_at)}</option>)}</select></label>
