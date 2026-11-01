@@ -46,7 +46,14 @@ internal sealed class MainForm : Form
         DoubleBuffered = true;
 
         BuildInterface();
-        Shown += async (_, _) => await RunStackAsync(forceBuild: false);
+        Shown += async (_, _) =>
+        {
+            WindowState = FormWindowState.Normal;
+            Activate();
+            BringToFront();
+            await RunStackAsync(forceBuild: false);
+            Activate();
+        };
         _refreshTimer.Tick += async (_, _) => await RefreshServicesAsync();
         _refreshTimer.Start();
         FormClosed += (_, _) => _refreshTimer.Stop();
