@@ -1,92 +1,33 @@
-# Đặc tả chức năng và nghiệp vụ — QL Đề Tài
+# Nghiệp vụ hiện có của QL Đề Tài
 
-## Mục tiêu
+## Vai trò
 
-Quản trị viên tổ chức tài khoản và học vụ; giảng viên quản lý đề tài, xử lý đăng ký; sinh viên tìm, đăng ký và theo dõi đề tài. Giao diện tiếng Việt, màu chủ đạo trắng/đen. Thay đổi cấu trúc PostgreSQL được thực hiện trực tiếp trong pgAdmin theo quy ước dự án.
-
-## Vai trò và cổng
-
-| Vai trò | Cổng | Nghiệp vụ |
+| Vai trò | Trang đăng nhập | Chức năng chính |
 |---|---|---|
-| Quản trị viên | Cổng riêng `/admin` | Cấp/khóa tài khoản, quản lý khoa/lớp/học kỳ/đợt, giám sát đề tài và đăng ký, xem lịch sử. |
-| Sinh viên | Cổng dùng chung `/login` | Tìm đề tài; gửi/hủy đăng ký hợp lệ; theo dõi phản hồi và lịch sử; quản lý hồ sơ/cài đặt. |
-| Giảng viên | Cổng dùng chung `/login` | Tạo/công bố đề tài; xem, duyệt/từ chối đăng ký; quản lý hồ sơ/cài đặt. |
+| Quản trị | `/admin` | Xem tổng quan và đơn; quản lý khoa, lớp, đợt; cấp, khóa, mở và đặt lại mật khẩu tài khoản |
+| Giảng viên | `/login` | Tạo/sửa bản nháp, công bố/ẩn đề tài; xem và quyết định đơn thuộc đề tài mình |
+| Sinh viên | `/login` | Tìm đề tài, đăng ký, hủy đơn đang chờ, xem lịch sử và quản lý hồ sơ |
 
-Cổng người dùng chung định tuyến theo vai trò. API phải kiểm tra quyền, quyền sở hữu bản ghi và trạng thái nghiệp vụ ở phía máy chủ.
+Đăng nhập sai hoặc đăng nhập đúng tài khoản ở cổng dành cho vai trò khác đều có cùng thông báo “Sai tên đăng nhập hoặc mật khẩu.” Quyền và quyền sở hữu bản ghi được kiểm tra ở API, không dựa vào việc ẩn nút trên giao diện.
 
 ## Tài khoản và bảo mật
 
-- Quản trị viên tạo tài khoản trực tiếp. Sinh viên nhận mã ngẫu nhiên `SV` + chữ số; giảng viên nhận `GV` + chữ số. Mã hồ sơ cũng là tên đăng nhập, phải duy nhất. Không dùng email làm tên đăng nhập.
-- Cấp tài khoản tạo mã hồ sơ, username và mật khẩu tạm ngẫu nhiên. Mật khẩu tạm chỉ hiện một lần; người dùng bắt buộc đổi ở lần đăng nhập đầu. Chỉ lưu mật khẩu đã băm; mật khẩu mới tối thiểu 12 ký tự.
-- Người dùng có thể bật/tắt xác thực hai lớp bằng TOTP tương thích Google Authenticator và đăng ký một hoặc nhiều Passkey (WebAuthn). Mã khôi phục dùng một lần; cho phép thu hồi Passkey. Cần quản lý phiên và ghi nhật ký sự kiện.
-- Tài khoản có trạng thái hoạt động/khóa. Đổi mật khẩu hoặc khóa tài khoản cần thu hồi phiên thích hợp.
+Mã hồ sơ sinh viên/giảng viên sinh tự động và là tên đăng nhập duy nhất. Mật khẩu tạm chỉ được trả về khi cấp hoặc đặt lại tài khoản; lần đăng nhập đầu phải đổi sang mật khẩu ít nhất 12 ký tự. Tài khoản có thể bị khóa và mở lại; khóa, đổi và đặt lại mật khẩu thu hồi phiên cũ. Người dùng có thể cấu hình TOTP, mã khôi phục và Passkey ở phần cài đặt cá nhân. Passkey cần ngữ cảnh an toàn của trình duyệt như HTTPS hoặc localhost.
 
-## Khoa, lớp, học kỳ và đợt
+## Khoa, lớp và đợt
 
-- Tên khoa không được trùng sau chuẩn hóa dấu, chữ hoa/thường và khoảng trắng. Mã khoa tự sinh từ chữ đầu tên khoa cộng số tăng dần (ví dụ `CNTT1`).
-- Tạo lớp bằng cách chọn khoa; mã lớp theo `<mã viết tắt khoa>-K<số>` (ví dụ `CNTT-K1`). Lớp sinh viên chọn phải thuộc đúng khoa.
-- Học kỳ có mã, tên và ngày bắt đầu/kết thúc. Mỗi học kỳ có thể có nhiều đợt; mã đợt duy nhất trong học kỳ. Thời điểm mở phải trước thời điểm đóng. Đợt đóng mặc định, admin chủ động mở/đóng.
-- Đề tài có thể có thời hạn riêng theo đợt. Thời hạn hiệu lực là giao các khoảng thời gian của đợt, đề tài và cấu hình riêng: mở muộn nhất, đóng sớm nhất. Nếu cấu hình riêng cấm đề tài thì không nhận đơn.
-- Không xóa khoa/lớp/học kỳ đang được dữ liệu tham chiếu; ưu tiên ngừng hoạt động hoặc lưu trữ.
+Tên khoa được kiểm tra trùng sau khi chuẩn hóa dấu, chữ hoa/thường và khoảng trắng. Mã khoa, mã lớp, mã học kỳ và mã đợt được hệ thống tạo; quản trị chọn học kỳ 1 hoặc 2 và khai báo ngày học kỳ, thời gian mở/đóng nhận đăng ký. Đợt mặc định đóng; quản trị mở khi sẵn sàng. Thời gian đăng ký đề tài do đợt được chọn quyết định.
 
-## Đề tài
+## Đề tài và đơn
 
-Giảng viên tạo bản nháp với mã, tiêu đề, mô tả, sức chứa và khoảng mở/đóng mặc định; đề tài thuộc khoa của giảng viên. Vòng đời: `Bản nháp → Đã công bố → Đóng đăng ký → Lưu trữ`. Chỉ đề tài đã công bố, còn hạn, không bị khóa và còn sức chứa mới nhận đăng ký. Không ẩn đề tài có đơn đang chờ/đã duyệt. Cần hạn chế sửa nội dung ảnh hưởng đến người đã đăng ký và lưu vết thay đổi.
+Giảng viên tạo bản nháp với tên, mô tả, đợt và **số lượng** bắt buộc lớn hơn 0. Mã đề tài sinh tự động. Giảng viên có thể sửa bản nháp trước khi công bố. Đề tài chỉ nhận đơn khi đã công bố, đợt đang mở và còn trong thời gian nhận đơn. Không ẩn đề tài đang có đơn chờ hoặc đã duyệt.
 
-## Đăng ký
+Sinh viên chỉ có một đơn chờ hoặc đã duyệt trong cùng đợt. Registration khóa giao dịch khi đếm số chỗ, nên nhiều sinh viên cùng gửi vào một chỗ cuối chỉ có một đơn được nhận. Sinh viên có thể hủy đơn đang chờ; giảng viên phụ trách được duyệt hoặc từ chối đơn và khi từ chối phải ghi lý do. Lịch sử ghi trạng thái, người thực hiện, thời điểm và ghi chú.
 
-- Sinh viên lọc/tìm đề tài, xem giảng viên, mô tả, sức chứa, đợt và hạn trước khi gửi đơn.
-- Trạng thái: `CHO_DUYET → DA_DUYET | TU_CHOI`; sinh viên được hủy đơn đang chờ nếu chính sách cho phép. Mọi chuyển trạng thái cần người thực hiện và thời điểm; từ chối cần lý do.
-- Mỗi sinh viên có tối đa một đơn đang chờ/đã duyệt trong mỗi đợt. Backend phải kiểm tra hiệu lực, điều kiện, sức chứa và chủ thể đăng nhập. Tạo đơn phải nguyên tử, chống vượt sức chứa khi nhiều yêu cầu đồng thời.
-- Giảng viên chỉ xử lý đơn của đề tài mình phụ trách. Hủy/từ chối giải phóng chỗ theo chính sách; không xóa lịch sử.
+Khi lỗi kết nối tạm thời, giao diện giữ danh sách đề tài đã tải và yêu cầu đăng ký ở trạng thái chờ xử lý trong trình duyệt. Nó thử gửi lại với cùng mã yêu cầu khi dịch vụ phục hồi; không hiển thị thành công trước khi máy chủ xác nhận. Hàng chờ chưa gửi không được đồng bộ giữa thiết bị.
 
-## Chức năng theo cổng
+## Giới hạn chức năng
 
-### Quản trị
+Chưa có thông báo đẩy/email, báo cáo xuất tệp, lưu trữ đề tài hoặc cấu hình thời hạn riêng cho từng đề tài. Nhật ký quyết định đăng ký và sự kiện bảo mật có trong database, nhưng chưa có màn hình báo cáo chuyên sâu. Dự án hiện triển khai các luồng học vụ và bảo mật nêu trên; những hạng mục này cần thiết kế và nghiệm thu riêng nếu muốn bổ sung.
 
-1. Tổng quan số tài khoản, đề tài, đợt và đơn cần xử lý.
-2. Tạo tài khoản SV/GV; sinh mã đăng nhập và mật khẩu tạm; tra cứu tài khoản.
-3. Tìm tài khoản, xem hồ sơ, khóa/mở, hỗ trợ đặt lại thông tin đăng nhập và thu hồi phiên.
-4. Quản lý khoa, lớp, học kỳ và đợt; cấu hình thời gian, mở/đóng.
-5. Giám sát đề tài, công bố và đăng ký; thao tác can thiệp phải có lý do và dấu vết.
-6. Xem lịch sử nghiệp vụ, nhật ký bảo mật và báo cáo.
-
-### Sinh viên
-
-1. Tổng quan hồ sơ, lớp, đợt đang mở và trạng thái đơn.
-2. Tìm/lọc/xem chi tiết đề tài.
-3. Gửi/hủy đăng ký hợp lệ; theo dõi kết quả và lịch sử.
-4. Đổi mật khẩu, cấu hình MFA, quản lý phiên.
-
-### Giảng viên
-
-1. Tổng quan đề tài, đơn chờ và hạn gần nhất.
-2. Tạo/sửa bản nháp, công bố/đóng đề tài, đặt sức chứa và hạn.
-3. Xem hồ sơ đơn, duyệt/từ chối kèm lý do; xem sinh viên đã được duyệt và lịch sử.
-4. Cập nhật hồ sơ chuyên môn, đổi mật khẩu, cấu hình MFA, quản lý phiên.
-
-## Thông báo và kiểm toán
-
-Thông báo cho sinh viên khi đơn được tiếp nhận, duyệt, từ chối, hủy hoặc khi thay đổi đề tài/hạn ảnh hưởng đến họ; thông báo cho giảng viên khi có đơn mới. Kênh trong ứng dụng là cơ bản; chỉ gửi email khi người dùng có địa chỉ hợp lệ và tự nguyện khai báo. Lịch sử nghiệp vụ và nhật ký bảo mật là hai mục đích riêng.
-
-## Dữ liệu khái niệm
-
-Tài khoản/vai trò; hồ sơ sinh viên, giảng viên, quản trị; khoa/lớp; học kỳ/đợt; đề tài; hạn riêng theo đề tài/đợt; đăng ký; lịch sử trạng thái; thông báo; phiên; thông tin Passkey/TOTP; mã khôi phục; nhật ký kiểm toán. Tạo tài khoản+hồ sơ và gửi đăng ký+cập nhật sức chứa cần giao dịch nhất quán.
-
-## Tình trạng triển khai
-
-- **Đã nối giao diện/API:** đăng nhập theo vai trò, đổi mật khẩu, hồ sơ cá nhân; cài đặt Google Authenticator, mã khôi phục và Passkey; tạo khoa/lớp/tài khoản SV/GV; học kỳ/đợt; tạo/công bố đề tài; đăng ký theo hạn/sức chứa; giảng viên duyệt/từ chối; sinh viên hủy đơn chờ.
-- **Thời hạn và sức chứa:** PostgreSQL kiểm tra giờ máy chủ trong hàm đăng ký, lấy giao giữa hạn đề tài, đợt và hạn riêng nếu có. Hàm khóa theo đề tài/đợt trong transaction trước khi đếm chỗ; đăng ký tranh chấp được tuần tự hóa và không vượt sức chứa. Giao diện chỉ hiển thị giờ máy chủ để người học biết mốc chốt; giờ thiết bị không tham gia quyết định.
-- **Vận hành phát triển:** Docker Compose chạy PostgreSQL/API/web; PostgreSQL có named volume và snapshot schema-only, không nạp lại schema khi volume đã có dữ liệu. Ứng dụng quản lý dịch vụ WinForms bật/tắt từng dịch vụ để thử gián đoạn. API tách liveness/readiness, trả 503 khi PostgreSQL mất kết nối, pool tự nối lại và GET portal thử phục hồi có giới hạn.
-- **Đã điều chỉnh qua pgAdmin:** email tài khoản được phép để trống; tài khoản mới không tạo email giả. Bảng thử nghiệm xin cấp tài khoản đã được gỡ khi bảng rỗng.
-- **Còn thiếu:** cấu hình thời hạn riêng từng đề tài/đợt; chỉnh sửa/lưu trữ đề tài; lịch sử có ghi chú và trang tra cứu; thông báo; quản lý khóa tài khoản/phiên; báo cáo.
-
-## Tiêu chí nghiệm thu
-
-1. Vai trò chỉ truy cập dữ liệu/chức năng được phép.
-2. Mã SV/GV duy nhất và là username; mật khẩu tạm chỉ xem một lần, đổi bắt buộc ở lần đầu.
-3. Khoa trùng khác dấu/hoa-thường bị chặn; mã lớp theo đúng quy tắc.
-4. Ngoài hạn kết hợp hoặc vượt sức chứa thì đăng ký bị từ chối kể cả khi gọi API trực tiếp.
-5. Không có hai đơn đang chờ/được duyệt của cùng sinh viên trong cùng đợt.
-6. Quyết định nghiệp vụ và thao tác bảo mật có thể truy vết.
-7. Passkey/TOTP không lưu bí mật dạng thuần và có quy trình thu hồi/khôi phục.
+Kiến trúc và kiểm thử: `docs/SOA_ARCHITECTURE.md`, `docs/VERIFICATION.md`.

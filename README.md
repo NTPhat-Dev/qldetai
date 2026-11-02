@@ -1,32 +1,31 @@
 # QL Đề Tài
 
-Hệ thống quản lý đề tài học thuật: cổng quản trị, cổng sinh viên/giảng viên và PostgreSQL.
+Hệ thống quản lý đề tài cho quản trị viên, giảng viên và sinh viên. Giao diện tiếng Việt, Arial, nền trang đăng nhập từ ảnh có sẵn của dự án.
 
-## Khởi chạy trên máy mới
+## Chạy trên Windows
 
-Clone repository rồi chạy `start-service-manager.cmd` (PowerShell: `.\start-service-manager.cmd`). Bộ khởi chạy tự kiểm tra và cài .NET 10 SDK cùng Docker Desktop bằng WinGet nếu máy còn thiếu. Nó kiểm tra WSL 2 trước khi cài Docker; nếu Windows cần bật WSL, bộ khởi chạy sẽ xin quyền quản trị và yêu cầu khởi động lại, sau đó chạy lại `start-service-manager.cmd` để tiếp tục. Cần có kết nối Internet và WinGet (App Installer). Các điều khoản Docker Desktop có thể cần được chấp nhận ở lần mở đầu tiên.
+Clone repository, mở thư mục gốc và chạy `start-service-manager.cmd` (trong PowerShell: `.\start-service-manager.cmd`). Trình khởi chạy kiểm tra .NET SDK, WSL 2 và Docker Desktop; khi thiếu, nó hướng dẫn hoặc cài các thành phần cần thiết bằng WinGet. Một số bước cài hệ thống có thể yêu cầu quyền quản trị và khởi động lại Windows. Sau đó chạy lại cùng tệp.
 
-Trình quản lý dịch vụ sẽ tự:
+Trình quản lý tạo `.env` cục bộ với khóa và mật khẩu ngẫu nhiên nếu chưa có, mở Docker Desktop khi cần, dựng các dịch vụ, chờ sẵn sàng và chỉ tạo `admin.demo` khi database Identity chưa có quản trị viên. Mật khẩu ban đầu chỉ hiển thị một lần; hãy lưu lại và đổi ngay. Trình quản lý cho phép theo dõi trạng thái, bật/tắt từng dịch vụ, xem nhật ký và thử lại khi có lỗi. Nó không xóa volume dữ liệu.
 
-1. Tạo `.env` cục bộ với mật khẩu PostgreSQL, khóa JWT và khóa mã hóa TOTP ngẫu nhiên nếu máy chưa có cấu hình.
-2. Mở Docker Desktop nếu ứng dụng chưa chạy và chờ engine sẵn sàng.
-3. Dựng và bật ba PostgreSQL riêng, các domain service, API Gateway và web; chờ đến khi tất cả báo khỏe.
-4. Khởi tạo schema vào các volume trống và tạo tài khoản quản trị `admin.demo` nếu Identity DB chưa có quản trị viên.
-5. Hiện mật khẩu quản trị ngẫu nhiên một lần trong trình quản lý. Lưu lại, đăng nhập và đổi mật khẩu ngay.
+## Chạy trên Ubuntu Server
 
-Giao diện hệ thống ở `http://localhost:5173`. Đây là cổng duy nhất được công khai; API và PostgreSQL chỉ giao tiếp nội bộ trong Docker. Cửa sổ WinForms chuẩn bị môi trường ở máy mới và bật/tắt các dịch vụ Docker. Nếu frontend dự án đã chạy tại cổng 5173, trình quản lý giữ nguyên tiến trình hiện tại và chỉ khởi tạo các dịch vụ còn thiếu. Cấu hình và dữ liệu có sẵn được giữ nguyên.
+Cài Docker Engine kèm Compose plugin, Git và OpenSSL; cho tài khoản đang dùng quyền chạy Docker hoặc dùng `sudo` khi khởi động. Tại thư mục gốc dự án, chạy:
 
-## Giữ và chuyển database
+```bash
+bash start-server.sh
+```
 
-Mỗi domain service lưu dữ liệu trong PostgreSQL server và named volume riêng: `qldetai_identity_data`, `qldetai_academic_data`, `qldetai_registration_data`. Dựng lại image hoặc clone code lần sau không xóa volume. Trình quản lý không có thao tác xóa volume; tránh `docker compose down -v` nếu cần giữ dữ liệu.
+Lần chạy đầu tạo `.env` ngẫu nhiên, dựng ba PostgreSQL và các dịch vụ, khởi tạo schema, tạo quản trị viên nếu chưa có và in mật khẩu tạm một lần. Lần sau chạy lại lệnh đó để nâng cấp image và tiếp tục dùng các volume hiện có. Máy ảo VirtualBox với NAT muốn mở trên máy chủ Windows có thể đặt địa chỉ trình duyệt trước lần khởi tạo, ví dụ `APP_ORIGIN=http://localhost:5174 bash start-server.sh`, rồi cấu hình chuyển tiếp cổng host `5174` tới guest `5173`. Điện thoại hoặc máy khác cần một đường mạng tới máy ảo hoặc cổng chuyển tiếp trên host; NAT và firewall có thể phải cấu hình thêm.
 
-Mỗi service khởi tạo schema riêng từ `services/<domain>/schema.sql` trên volume mới. Cấu trúc dữ liệu của các domain không dùng chung database hoặc khóa ngoại liên dịch vụ.
+## Địa chỉ và dữ liệu
 
-## Phát triển trực tiếp
+Web: `http://localhost:5173` (hoặc cổng `WEB_PORT` trong `.env`); quản trị: `/admin`; sinh viên và giảng viên: `/login`. Cổng web là cổng công khai duy nhất. API và PostgreSQL chỉ ở mạng Docker nội bộ.
 
-- Chạy giao diện: `http://localhost:5173` hoặc `http://localhost:5173/admin`.
-- Web/Nginx chuyển tiếp `/api` tới API Gateway trong mạng Docker. Các API và database không công khai cổng máy chủ.
+Identity, Academic và Registration có PostgreSQL container, database và volume riêng. Schema được tạo trên volume mới và nâng cấp bằng migration khi ứng dụng khởi động với volume cũ. Khởi động lại, build lại image hoặc clone code không xóa volume. **Không chạy `docker compose down -v` khi cần giữ dữ liệu.** Sao lưu các volume trước khi nâng cấp môi trường có dữ liệu thật.
 
-## Kiến trúc SOA
+## Kiểm thử
 
-Frontend chỉ gọi API Gateway. Identity sở hữu tài khoản và bảo mật; Academic sở hữu khoa, lớp, học kỳ, đợt và đề tài; Registration sở hữu đơn và lịch sử. Mỗi service có PostgreSQL server và volume riêng, chỉ cổng web `5173` được công khai. Ranh giới dữ liệu chi tiết nằm trong `docs/SOA_ARCHITECTURE.md`.
+`docs/VERIFICATION.md` ghi các lệnh kiểm thử và giới hạn của kiểm thử chịu lỗi. Bộ kiểm thử tích hợp tạo một Compose project và ba volume ngẫu nhiên riêng, rồi chỉ dọn project kiểm thử đó. Không chạy thử ngắt database trên môi trường demo có dữ liệu cần giữ.
+
+Kiến trúc và mức bảo đảm SOA: `docs/SOA_ARCHITECTURE.md`.

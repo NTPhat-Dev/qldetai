@@ -2,7 +2,6 @@ name: qldetai
 
 services:
   identity-db:
-    profiles: ["soa"]
     image: postgres:18
     environment:
       POSTGRES_DB: identity
@@ -21,7 +20,6 @@ services:
     restart: unless-stopped
 
   academic-db:
-    profiles: ["soa"]
     image: postgres:18
     environment:
       POSTGRES_DB: academic
@@ -40,7 +38,6 @@ services:
     restart: unless-stopped
 
   registration-db:
-    profiles: ["soa"]
     image: postgres:18
     environment:
       POSTGRES_DB: registration
@@ -59,7 +56,6 @@ services:
     restart: unless-stopped
 
   identity-service:
-    profiles: ["soa"]
     build:
       context: .
       dockerfile: services/identity/Dockerfile
@@ -68,6 +64,7 @@ services:
       PORT: 3101
       DATABASE_URL: postgresql://identity:${POSTGRES_PASSWORD:?Create .env from .env.docker.example}@identity-db:5432/identity
       JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:-}
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?Create .env from .env.docker.example}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:5173}
@@ -84,7 +81,6 @@ services:
     restart: unless-stopped
 
   academic-service:
-    profiles: ["soa"]
     build:
       context: .
       dockerfile: services/academic/Dockerfile
@@ -93,6 +89,7 @@ services:
       PORT: 3102
       DATABASE_URL: postgresql://academic:${POSTGRES_PASSWORD:?Create .env from .env.docker.example}@academic-db:5432/academic
       JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:-}
     depends_on:
       academic-db:
         condition: service_healthy
@@ -106,7 +103,6 @@ services:
     restart: unless-stopped
 
   registration-service:
-    profiles: ["soa"]
     build:
       context: .
       dockerfile: services/registration/Dockerfile
@@ -115,6 +111,7 @@ services:
       PORT: 3103
       DATABASE_URL: postgresql://registration:${POSTGRES_PASSWORD:?Create .env from .env.docker.example}@registration-db:5432/registration
       JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:-}
     depends_on:
       registration-db:
         condition: service_healthy
@@ -128,7 +125,6 @@ services:
     restart: unless-stopped
 
   api-gateway:
-    profiles: ["soa"]
     build:
       context: .
       dockerfile: services/gateway/Dockerfile
@@ -136,6 +132,7 @@ services:
       NODE_ENV: production
       PORT: 3100
       JWT_SECRET: ${JWT_SECRET:?Create .env from .env.docker.example}
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:-}
     depends_on:
       identity-service:
         condition: service_healthy

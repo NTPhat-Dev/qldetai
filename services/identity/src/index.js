@@ -1,5 +1,7 @@
 import { createApp } from '../../shared/create-app.js'
 import { createDatabasePool } from '../../shared/database.js'
+import { createServiceFetch } from '../../shared/service-client.js'
+import { migrate } from '../../shared/migrations.js'
 import bcrypt from 'bcryptjs'
 import argon2 from 'argon2'
 import jwt from 'jsonwebtoken'
@@ -8,6 +10,8 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomInt } 
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from '@simplewebauthn/server'
 
 const pool = createDatabasePool('identity')
+await migrate(pool, 'identity')
+const fetch = createServiceFetch('identity')
 const app = createApp({ name: 'identity', pool })
 const jwtSecret = process.env.JWT_SECRET
 const webauthnRPID = process.env.WEBAUTHN_RP_ID || 'localhost'
@@ -16,7 +20,7 @@ const hashPassword = (password) => argon2.hash(password, { type: argon2.argon2id
 const verifyPassword = async (password, hash) => hash?.startsWith('$argon2id$')
   ? { valid: await argon2.verify(hash, password), needsUpgrade: false }
   : { valid: await bcrypt.compare(password, hash ?? ''), needsUpgrade: true }
-const signToken = (user, overrides = {}) => jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, ...overrides }, jwtSecret, { expiresIn: '8h' })
+const signToken = (user, overrides = {}) => jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, tokenVersion: user.token_version ?? 0, ...overrides }, jwtSecret, { expiresIn: '8h' })
 const encryptionKey = () => createHash('sha256').update(process.env.TOTP_ENCRYPTION_KEY || `${jwtSecret}:qldetai-totp-v1`).digest()
 function encryptSecret(secret) {
   const iv = randomBytes(12)
@@ -32,20 +36,23 @@ function decryptSecret(value) {
 }
 const checkTotp = (secret, token) => new OTPAuth.TOTP({ issuer: 'QL Đề Tài', label: 'Tài khoản', algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(secret) }).validate({ token, window: 1 }) !== null
 
-function verifyBearer(ctx, { allowPending = false } = {}) {
+async function verifyBearer(ctx, { allowPending = false } = {}) {
+  let claims
   try {
-    const token = ctx.get('authorization').replace(/^Bearer\s+/i, '')
-    const claims = jwt.verify(token, jwtSecret)
-    if (!allowPending && claims.mfaPending) throw new Error('pending')
-    return claims
+    claims = jwt.verify(ctx.get('authorization').replace(/^Bearer\s+/i, ''), jwtSecret, { algorithms: ['HS256'] })
+    if ((!allowPending && claims.mfaPending) || claims.purpose || typeof claims.sub !== 'string') throw new Error('pending')
   } catch { ctx.throw(401, 'Phiên đăng nhập hết hạn hoặc không hợp lệ.') }
+  const current = await pool.query('SELECT role,status,must_change_password,token_version FROM identity.users WHERE id=$1', [claims.sub])
+  const user = current.rows[0]
+  if (!user || user.status !== 'HOAT_DONG' || user.role !== claims.role || (claims.tokenVersion ?? 0) !== user.token_version) ctx.throw(401, 'Phiên đăng nhập đã bị thu hồi.')
+  return claims
 }
 
 app.use(async (ctx, next) => {
   if (ctx.method === 'POST' && ctx.path === '/api/auth/login') {
     const { username, password } = ctx.request.body ?? {}
-    if (!username || !password) ctx.throw(400, 'Vui lòng nhập tên đăng nhập và mật khẩu.')
-    const result = await pool.query('SELECT id,username,password_hash,role,status,must_change_password,display_name FROM identity.users WHERE username=lower(btrim($1)) LIMIT 1', [username])
+    if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password || username.length>120 || password.length>1024) ctx.throw(400, 'Vui lòng nhập tên đăng nhập và mật khẩu.')
+    const result = await pool.query('SELECT id,username,password_hash,role,status,must_change_password,display_name,token_version FROM identity.users WHERE username=lower(btrim($1)) LIMIT 1', [username])
     const user = result.rows[0]
     let checked = { valid: false, needsUpgrade: false }
     try { if (user?.password_hash) checked = await verifyPassword(password, user.password_hash) } catch { checked = { valid: false, needsUpgrade: false } }
@@ -53,15 +60,15 @@ app.use(async (ctx, next) => {
     if (checked.needsUpgrade) await pool.query('UPDATE identity.users SET password_hash=$1,updated_at=now() WHERE id=$2', [await hashPassword(password), user.id])
     const factors = await pool.query('SELECT EXISTS(SELECT 1 FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL) AS totp, EXISTS(SELECT 1 FROM identity.passkeys WHERE user_id=$1) AS passkey', [user.id])
     if (factors.rows[0].totp || factors.rows[0].passkey) {
-      ctx.body = { mfaRequired: true, role: user.role, methods: factors.rows[0], mfaToken: jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, mfaPending: true }, jwtSecret, { expiresIn: '5m' }) }
+      ctx.body = { mfaRequired: true, role: user.role, methods: factors.rows[0], mfaToken: jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, tokenVersion: user.token_version, mfaPending: true }, jwtSecret, { expiresIn: '5m' }) }
     } else ctx.body = { token: signToken(user), role: user.role, mustChangePassword: user.must_change_password, user: { id: user.id, name: user.display_name, username: user.username } }
     return
   }
   if (ctx.path.startsWith('/api/auth/')) {
     if (ctx.method === 'POST' && ctx.path === '/api/auth/change-password') {
-      const claims = verifyBearer(ctx)
+      const claims = await verifyBearer(ctx)
       const { currentPassword, newPassword } = ctx.request.body ?? {}
-      if (!newPassword || newPassword.length < 12) ctx.throw(400, 'Mật khẩu mới phải có ít nhất 12 ký tự.')
+      if (typeof newPassword !== 'string' || newPassword.length < 12 || newPassword.length > 256) ctx.throw(400, 'Mật khẩu mới phải có ít nhất 12 ký tự.')
       const result = await pool.query('SELECT password_hash,must_change_password FROM identity.users WHERE id=$1', [claims.sub])
       if (!result.rowCount) ctx.throw(401, 'Tài khoản không còn tồn tại.')
       if (!claims.mustChangePassword || !result.rows[0].must_change_password) {
@@ -69,12 +76,14 @@ app.use(async (ctx, next) => {
         const checked = result.rowCount ? await verifyPassword(currentPassword, result.rows[0].password_hash) : { valid: false }
         if (!checked.valid) ctx.throw(400, 'Mật khẩu hiện tại không chính xác.')
       }
-      await pool.query('UPDATE identity.users SET password_hash=$1,must_change_password=false,updated_at=now() WHERE id=$2', [await hashPassword(newPassword), claims.sub])
-      ctx.body = { token: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: false }, jwtSecret, { expiresIn: '8h' }) }
+      const updated = await pool.query(`WITH updated AS (UPDATE identity.users SET password_hash=$1,must_change_password=false,token_version=token_version+1,updated_at=now() WHERE id=$2 RETURNING *)
+        , audit AS (INSERT INTO identity.security_events(user_id,actor_id,action) SELECT id,id,'PASSWORD_CHANGED' FROM updated)
+        SELECT * FROM updated`, [await hashPassword(newPassword), claims.sub])
+      ctx.body = { token: signToken(updated.rows[0]) }
       return
     }
     if (ctx.method === 'POST' && ctx.path === '/api/auth/mfa/totp') {
-      const claims = verifyBearer(ctx, { allowPending: true })
+      const claims = await verifyBearer(ctx, { allowPending: true })
       if (!claims.mfaPending) ctx.throw(401, 'Phiên xác thực hai lớp đã hết hạn.')
       const { code } = ctx.request.body ?? {}
       const factor = await pool.query('SELECT encrypted_secret FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL', [claims.sub])
@@ -84,18 +93,18 @@ app.use(async (ctx, next) => {
         valid = Boolean((await pool.query('UPDATE identity.recovery_codes SET used_at=now() WHERE user_id=$1 AND code_hash=$2 AND used_at IS NULL RETURNING id', [claims.sub, hash])).rowCount)
       }
       if (!valid) ctx.throw(401, 'Mã xác thực không đúng hoặc đã được sử dụng.')
-      const user = await pool.query("SELECT id,role,must_change_password FROM identity.users WHERE id=$1 AND status='HOAT_DONG'", [claims.sub])
-      if (!user.rowCount) ctx.throw(401, 'Tài khoản không còn hoạt động.')
+      const user = await pool.query("SELECT id,role,must_change_password,token_version FROM identity.users WHERE id=$1 AND status='HOAT_DONG'", [claims.sub])
+      if (!user.rowCount || (claims.tokenVersion ?? 0) !== user.rows[0].token_version) ctx.throw(401, 'Tài khoản không còn hoạt động hoặc phiên đã bị thu hồi.')
       ctx.body = { token: signToken(user.rows[0]), role: user.rows[0].role, mustChangePassword: user.rows[0].must_change_password }
       return
     }
     if (ctx.method === 'POST' && ctx.path === '/api/auth/mfa/passkey/options') {
-      const claims = verifyBearer(ctx, { allowPending: true })
+      const claims = await verifyBearer(ctx, { allowPending: true })
       if (!claims.mfaPending) ctx.throw(401, 'Phiên xác thực hai lớp đã hết hạn.')
       const passkeys = await pool.query('SELECT credential_id,transports FROM identity.passkeys WHERE user_id=$1', [claims.sub])
       if (!passkeys.rowCount) ctx.throw(400, 'Tài khoản chưa đăng ký Passkey.')
       const options = await generateAuthenticationOptions({ rpID: webauthnRPID, userVerification: 'required', allowCredentials: passkeys.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })) })
-      ctx.body = { options, challengeToken: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: claims.mustChangePassword, mfaPending: true, webauthnChallenge: options.challenge, purpose: 'mfa-passkey' }, jwtSecret, { expiresIn: '5m' }) }
+      ctx.body = { options, challengeToken: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: claims.mustChangePassword, tokenVersion: claims.tokenVersion, mfaPending: true, webauthnChallenge: options.challenge, purpose: 'mfa-passkey' }, jwtSecret, { expiresIn: '5m' }) }
       return
     }
     if (ctx.method === 'POST' && ctx.path === '/api/auth/mfa/passkey/verify') {
@@ -108,17 +117,17 @@ app.use(async (ctx, next) => {
       try { verification = await verifyAuthenticationResponse({ response, expectedChallenge: claims.webauthnChallenge, expectedOrigin: webauthnOrigin, expectedRPID: webauthnRPID, requireUserVerification: true, credential: { id: Buffer.from(passkey.rows[0].credential_id).toString('utf8'), publicKey: new Uint8Array(passkey.rows[0].public_key), counter: Number(passkey.rows[0].sign_count), transports: passkey.rows[0].transports } }) } catch { ctx.throw(401, 'Xác thực Passkey thất bại.') }
       if (!verification?.verified) ctx.throw(401, 'Xác thực Passkey thất bại.')
       await pool.query('UPDATE identity.passkeys SET sign_count=$1,last_used_at=now() WHERE id=$2', [verification.authenticationInfo.newCounter, passkey.rows[0].id])
-      const user = await pool.query("SELECT id,role,must_change_password FROM identity.users WHERE id=$1 AND status='HOAT_DONG'", [claims.sub])
-      if (!user.rowCount) ctx.throw(401, 'Tài khoản không còn hoạt động.')
+      const user = await pool.query("SELECT id,role,must_change_password,token_version FROM identity.users WHERE id=$1 AND status='HOAT_DONG'", [claims.sub])
+      if (!user.rowCount || (claims.tokenVersion ?? 0) !== user.rows[0].token_version) ctx.throw(401, 'Tài khoản không còn hoạt động hoặc phiên đã bị thu hồi.')
       ctx.body = { token: signToken(user.rows[0]), role: user.rows[0].role, mustChangePassword: user.rows[0].must_change_password }
       return
     }
   }
 
   if (ctx.path.startsWith('/api/portal/') || ctx.path.startsWith('/api/admin/accounts')) {
-    const claims = verifyBearer(ctx)
+    const claims = await verifyBearer(ctx)
     if (ctx.path.startsWith('/api/admin/') && (claims.role !== 'QUAN_TRI' || claims.mustChangePassword)) ctx.throw(403, 'Bạn không có quyền thực hiện thao tác này.')
-    if (ctx.path.startsWith('/api/portal/') && !['SINH_VIEN', 'GIANG_VIEN'].includes(claims.role)) ctx.throw(403, 'Bạn không có quyền truy cập cổng này.')
+    if (ctx.path.startsWith('/api/portal/') && (claims.mustChangePassword || !['SINH_VIEN', 'GIANG_VIEN'].includes(claims.role))) ctx.throw(403, 'Bạn không có quyền truy cập cổng này.')
     ctx.state.identity = claims
   }
 
@@ -175,7 +184,8 @@ app.use(async (ctx, next) => {
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
-      await client.query('UPDATE identity.totp_factors SET confirmed_at=now() WHERE user_id=$1 AND confirmed_at IS NULL', [ctx.state.identity.sub])
+      const confirmed = await client.query('UPDATE identity.totp_factors SET confirmed_at=now() WHERE user_id=$1 AND confirmed_at IS NULL RETURNING user_id', [ctx.state.identity.sub])
+      if (!confirmed.rowCount) ctx.throw(409, 'Yêu cầu thiết lập đã được xác nhận. Hãy tải lại cài đặt.')
       await client.query('DELETE FROM identity.recovery_codes WHERE user_id=$1', [ctx.state.identity.sub])
       for (const recoveryCode of recoveryCodes) await client.query('INSERT INTO identity.recovery_codes(user_id,code_hash) VALUES($1,$2)', [ctx.state.identity.sub, createHash('sha256').update(recoveryCode).digest()])
       await client.query('COMMIT')
@@ -189,8 +199,7 @@ app.use(async (ctx, next) => {
     if (!user.rowCount || !(await verifyPassword(currentPassword ?? '', user.rows[0].password_hash)).valid) ctx.throw(403, 'Mật khẩu hiện tại không đúng.')
     const factor = await pool.query('SELECT encrypted_secret FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL', [ctx.state.identity.sub])
     if (!factor.rowCount || !checkTotp(decryptSecret(factor.rows[0].encrypted_secret), String(code ?? ''))) ctx.throw(400, 'Mã Google Authenticator không đúng.')
-    await pool.query('DELETE FROM identity.totp_factors WHERE user_id=$1', [ctx.state.identity.sub])
-    await pool.query('DELETE FROM identity.recovery_codes WHERE user_id=$1', [ctx.state.identity.sub])
+    await pool.query('WITH codes AS (DELETE FROM identity.recovery_codes WHERE user_id=$1) DELETE FROM identity.totp_factors WHERE user_id=$1', [ctx.state.identity.sub])
     ctx.body = { enabled: false }
     return
   }
@@ -227,6 +236,31 @@ app.use(async (ctx, next) => {
     return
   }
 
+  const accountStatus = ctx.path.match(/^\/api\/admin\/accounts\/([0-9a-f-]+)\/status$/i)
+  if (ctx.method === 'PATCH' && accountStatus) {
+    const status = ctx.request.body?.status
+    if (!['HOAT_DONG','KHOA','BI_KHOA'].includes(status)) ctx.throw(400, 'Trạng thái tài khoản không hợp lệ.')
+    const result = await pool.query(`WITH changed AS (
+      UPDATE identity.users SET status=$1,token_version=token_version+1,updated_at=now()
+      WHERE id=$2 AND role IN ('SINH_VIEN','GIANG_VIEN') RETURNING id,username,status
+    ), audit AS (INSERT INTO identity.security_events(user_id,actor_id,action)
+      SELECT id,$3,'ACCOUNT_STATUS_' || status FROM changed)
+    SELECT * FROM changed`, [status === 'BI_KHOA' ? 'KHOA' : status,accountStatus[1],ctx.state.identity.sub])
+    if (!result.rowCount) ctx.throw(404, 'Không tìm thấy tài khoản sinh viên hoặc giảng viên.')
+    ctx.body = result.rows[0]; return
+  }
+  const resetPassword = ctx.path.match(/^\/api\/admin\/accounts\/([0-9a-f-]+)\/reset-password$/i)
+  if (ctx.method === 'POST' && resetPassword) {
+    const temporaryPassword = randomBytes(18).toString('base64url')
+    const result = await pool.query(`WITH changed AS (
+      UPDATE identity.users SET password_hash=$1,must_change_password=true,token_version=token_version+1,updated_at=now()
+      WHERE id=$2 AND role IN ('SINH_VIEN','GIANG_VIEN') RETURNING id,username
+    ), audit AS (INSERT INTO identity.security_events(user_id,actor_id,action)
+      SELECT id,$3,'PASSWORD_RESET' FROM changed)
+    SELECT * FROM changed`, [await hashPassword(temporaryPassword),resetPassword[1],ctx.state.identity.sub])
+    if (!result.rowCount) ctx.throw(404, 'Không tìm thấy tài khoản sinh viên hoặc giảng viên.')
+    ctx.body = { username: result.rows[0].username, temporaryPassword }; return
+  }
   if (ctx.method === 'GET' && ctx.path === '/api/admin/accounts') {
     const result = await pool.query('SELECT id,username,role,status,created_at,display_name AS name,profile_code,department_id FROM identity.users ORDER BY created_at DESC LIMIT 100')
     const departments = await fetch('http://academic-service:3102/internal/v1/academic/departments').then((response) => response.json()).catch(() => [])
@@ -235,7 +269,7 @@ app.use(async (ctx, next) => {
   }
   const internalUser = ctx.path.match(/^\/internal\/v1\/identity\/users\/([0-9a-f-]+)$/i)
   if (ctx.method === 'GET' && internalUser) {
-    const result = await pool.query('SELECT id,username,role,status,display_name,profile_code,department_id,class_name,phone,academic_title,degree,specialization FROM identity.users WHERE id=$1', [internalUser[1]])
+    const result = await pool.query('SELECT id,username,role,status,must_change_password,token_version,display_name,profile_code,department_id,class_name,phone,academic_title,degree,specialization FROM identity.users WHERE id=$1', [internalUser[1]])
     if (!result.rowCount) ctx.throw(404, 'Không tìm thấy tài khoản.')
     ctx.body = result.rows[0]
     return
@@ -271,20 +305,7 @@ app.use(async (ctx, next) => {
   await next()
 })
 
-app.use(async (ctx) => {
-  const userMatch = ctx.path.match(/^\/internal\/v1\/identity\/users\/([0-9a-f-]+)$/i)
-  if (ctx.method === 'GET' && userMatch) {
-    const result = await pool.query(
-      'SELECT id, username, role, status, display_name, profile_code FROM identity.users WHERE id=$1',
-      [userMatch[1]],
-    )
-    if (!result.rowCount) ctx.throw(404, 'Không tìm thấy tài khoản.')
-    ctx.body = result.rows[0]
-    return
-  }
-  ctx.status = 404
-  ctx.body = { error: 'Not found' }
-})
+app.use(async (ctx) => { ctx.status = 404; ctx.body = { error: 'Không tìm thấy chức năng.' } })
 
 const port = Number(process.env.PORT) || 3101
 const server = app.listen(port, () => console.log(`Identity service listening on ${port}`))

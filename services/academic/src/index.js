@@ -1,23 +1,32 @@
 import { createApp } from '../../shared/create-app.js'
 import { createDatabasePool } from '../../shared/database.js'
-import jwt from 'jsonwebtoken'
+import { createServiceFetch } from '../../shared/service-client.js'
+import { migrate } from '../../shared/migrations.js'
+import { authorize } from '../../shared/authorize.js'
 import { randomBytes } from 'node:crypto'
 
 const pool = createDatabasePool('academic')
+await migrate(pool, 'academic')
+const fetch = createServiceFetch('academic')
 const app = createApp({ name: 'academic', pool })
-const jwtSecret = process.env.JWT_SECRET
-const claims = (ctx, roles) => {
+const normalizedName = (value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g,'d').toLowerCase().replace(/\s+/g,' ').trim()
+const fence = (scope,id,closed) => fetch(`http://registration-service:3103/internal/v1/registrations/admission/${scope}/${id}`, { method: 'POST', headers: { 'content-type':'application/json' }, body: JSON.stringify({closed}) })
+async function policyChange(scope,id,change) {
+  const client = await pool.connect()
+  let damaged = false
   try {
-    const value = jwt.verify(ctx.get('authorization').replace(/^Bearer\s+/i, ''), jwtSecret)
-    if (value.mustChangePassword || !roles.includes(value.role)) ctx.throw(403, 'Bạn không có quyền thực hiện thao tác này.')
-    return value
-  } catch (error) { if (error.status === 403) throw error; ctx.throw(401, 'Phiên đăng nhập hết hạn hoặc không hợp lệ.') }
+    await client.query('SELECT pg_advisory_lock(hashtext($1))', [`policy:${scope}:${id}`])
+    return await change(client)
+  } finally {
+    try { await client.query('SELECT pg_advisory_unlock(hashtext($1))', [`policy:${scope}:${id}`]) } catch { damaged = true }
+    client.release(damaged)
+  }
 }
 const initials = (name) => name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean).map((word) => word[0]).join('').slice(0, 8)
 
 app.use(async (ctx) => {
   if (ctx.path.startsWith('/api/admin/') || ctx.path.startsWith('/api/portal/topics') || ctx.path === '/api/portal/rounds') {
-    const user = claims(ctx, ctx.path.startsWith('/api/portal/') ? ['GIANG_VIEN'] : ['QUAN_TRI'])
+    const user = await authorize(ctx, ctx.path.startsWith('/api/portal/') ? ['GIANG_VIEN'] : ['QUAN_TRI'], fetch)
     ctx.state.user = user
   }
   if (ctx.method === 'GET' && ctx.path === '/api/portal/rounds') {
@@ -38,7 +47,7 @@ app.use(async (ctx) => {
     try {
       await client.query('BEGIN')
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`department:${prefix}`])
-      if ((await client.query('SELECT 1 FROM academic.departments WHERE lower(name)=lower($1)', [name])).rowCount) ctx.throw(409, 'Tên khoa này đã tồn tại.')
+      if ((await client.query('SELECT name FROM academic.departments')).rows.some((row) => normalizedName(row.name) === normalizedName(name))) ctx.throw(409, 'Tên khoa này đã tồn tại.')
       const number = await client.query("SELECT COALESCE(max(substring(code from length($1)+1)::bigint),0)+1 AS next FROM academic.departments WHERE code ~ ($1 || '[0-9]+$')", [prefix])
       const row = (await client.query('INSERT INTO academic.departments(code,name) VALUES($1,$2) RETURNING id,code,name', [`${prefix}${number.rows[0].next}`, name])).rows[0]
       await client.query('COMMIT'); ctx.status = 201; ctx.body = row
@@ -55,9 +64,14 @@ app.use(async (ctx) => {
     const result = await pool.query("SELECT regexp_replace(code,'[0-9]+$','') AS prefix FROM academic.departments WHERE id=$1", [departmentId])
     if (!result.rowCount) ctx.throw(400, 'Khoa đã chọn không tồn tại.')
     const prefix = result.rows[0].prefix
-    const sequence = await pool.query("SELECT COALESCE(max(substring(code from '-K([0-9]+)$')::integer),0)+1 AS next FROM academic.classes WHERE department_id=$1 AND code ~ ('^' || $2 || '-K[0-9]+$')", [departmentId, prefix])
-    ctx.status = 201
-    ctx.body = (await pool.query('INSERT INTO academic.classes(department_id,code,name) VALUES($1,$2,$2) RETURNING id,code,name', [departmentId, `${prefix}-K${sequence.rows[0].next}`])).rows[0]
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`class:${prefix}`])
+      const sequence = await client.query("SELECT COALESCE(max(substring(code from '-K([0-9]+)$')::integer),0)+1 AS next FROM academic.classes WHERE code ~ ('^' || $1 || '-K[0-9]+$')", [prefix])
+      ctx.body = (await client.query('INSERT INTO academic.classes(department_id,code,name) VALUES($1,$2,$2) RETURNING id,code,name', [departmentId, `${prefix}-K${sequence.rows[0].next}`])).rows[0]
+      await client.query('COMMIT'); ctx.status = 201
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error } finally { client.release() }
     return
   }
   if (ctx.method === 'GET' && ctx.path === '/api/admin/rounds') {
@@ -98,14 +112,18 @@ app.use(async (ctx) => {
   const roundState = ctx.path.match(/^\/api\/admin\/rounds\/([^/]+)$/)
   if (ctx.method === 'PATCH' && roundState) {
     if (typeof ctx.request.body?.isOpen !== 'boolean') ctx.throw(400, 'Trạng thái đợt đăng ký không hợp lệ.')
-    const result = await pool.query('UPDATE academic.rounds SET is_open=$1 WHERE id=$2 RETURNING id,code,is_open', [ctx.request.body.isOpen,roundState[1]])
-    if (!result.rowCount) ctx.throw(404, 'Không tìm thấy đợt đăng ký.')
-    ctx.body = result.rows[0]; return
+    ctx.body = await policyChange('round',roundState[1],async (client) => {
+      if (!(await client.query('SELECT id FROM academic.rounds WHERE id=$1', [roundState[1]])).rowCount) ctx.throw(404, 'Không tìm thấy đợt đăng ký.')
+      if (!ctx.request.body.isOpen) await fence('rounds',roundState[1],true)
+      const result = await client.query('UPDATE academic.rounds SET is_open=$1 WHERE id=$2 RETURNING id,code,is_open', [ctx.request.body.isOpen,roundState[1]])
+      if (ctx.request.body.isOpen) await fence('rounds',roundState[1],false)
+      return result.rows[0]
+    }); return
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/topics') {
     const { title,description,roundId,capacity } = ctx.request.body ?? {}
     const numericCapacity = Number(capacity)
-    if (typeof title !== 'string' || !title.trim() || typeof roundId !== 'string') ctx.throw(400, 'Nhập tên đề tài và chọn đợt đăng ký.')
+    if (typeof title !== 'string' || !title.trim() || title.length > 240 || (typeof description === 'string' && description.length > 10000) || typeof roundId !== 'string') ctx.throw(400, 'Nhập tên đề tài và chọn đợt đăng ký.')
     if (capacity == null || String(capacity).trim() === '' || !Number.isSafeInteger(numericCapacity) || numericCapacity < 1) ctx.throw(400, 'Số lượng phải là số nguyên từ 1 trở lên.')
     const roundResult = await pool.query('SELECT id,code,opens_at,closes_at FROM academic.rounds WHERE id=$1 AND closes_at>clock_timestamp()', [roundId])
     if (!roundResult.rowCount) ctx.throw(400, 'Đợt đăng ký không tồn tại hoặc đã hết hạn.')
@@ -128,17 +146,32 @@ app.use(async (ctx) => {
     }
     ctx.status = 201; ctx.body = result.rows[0]; return
   }
+  const editTopic = ctx.path.match(/^\/api\/portal\/topics\/([0-9a-f-]+)$/i)
+  if (ctx.method === 'PATCH' && editTopic) {
+    const { title,description,capacity } = ctx.request.body ?? {}
+    if (typeof title !== 'string' || !title.trim() || title.length > 240 || !Number.isSafeInteger(Number(capacity)) || Number(capacity)<1 || typeof description !== 'string' || description.length>10000) ctx.throw(400, 'Nhập tên, mô tả và số lượng hợp lệ.')
+    ctx.body = await policyChange('topic',editTopic[1],async (client) => {
+    const own = await client.query('SELECT id,published FROM academic.topics WHERE id=$1 AND lecturer_id=$2', [editTopic[1],ctx.state.user.sub])
+    if (!own.rowCount) ctx.throw(404,'Không tìm thấy đề tài của bạn.')
+    if (own.rows[0].published) ctx.throw(409,'Chỉ được sửa đề tài ở trạng thái bản nháp.')
+    await fence('topics',editTopic[1],true)
+    const result = await client.query('UPDATE academic.topics SET title=$1,description=$2,capacity=$3 WHERE id=$4 AND lecturer_id=$5 AND NOT published RETURNING id,code,title,description,capacity,published', [title.trim(),description.trim()||null,Number(capacity),editTopic[1],ctx.state.user.sub])
+    if (!result.rowCount) ctx.throw(409,'Trạng thái đề tài đã thay đổi. Hãy tải lại.')
+    return result.rows[0]
+    }); return
+  }
   const publication = ctx.path.match(/^\/api\/portal\/topics\/([^/]+)\/publication$/)
   if (ctx.method === 'PATCH' && publication) {
     const { published } = ctx.request.body ?? {}
     if (typeof published !== 'boolean') ctx.throw(400, 'Trạng thái công bố không hợp lệ.')
-    if (!published) {
-      const active = await fetch(`http://registration-service:3103/internal/v1/registrations/topics/${publication[1]}/active`).then((response) => response.json())
-      if (active.count) ctx.throw(409, 'Không thể ẩn đề tài đã có đăng ký hiệu lực.')
-    }
-    const result = await pool.query('UPDATE academic.topics SET published=$1 WHERE id=$2 AND lecturer_id=$3 RETURNING published', [published,publication[1],ctx.state.user.sub])
-    if (!result.rowCount) ctx.throw(404, 'Không tìm thấy đề tài của giảng viên.')
-    ctx.body = result.rows[0]; return
+    ctx.body = await policyChange('topic',publication[1],async (client) => {
+    const owned = await client.query('SELECT id FROM academic.topics WHERE id=$1 AND lecturer_id=$2', [publication[1],ctx.state.user.sub])
+    if (!owned.rowCount) ctx.throw(404, 'Không tìm thấy đề tài của giảng viên.')
+    if (!published) await fence('topics',publication[1],true)
+    const result = await client.query('UPDATE academic.topics SET published=$1 WHERE id=$2 AND lecturer_id=$3 RETURNING published', [published,publication[1],ctx.state.user.sub])
+    if (published) await fence('topics',publication[1],false)
+    return result.rows[0]
+    }); return
   }
   if (ctx.method === 'GET' && ctx.path === '/internal/v1/academic/departments') {
     const result = await pool.query('SELECT id, code, name FROM academic.departments ORDER BY name')
@@ -174,10 +207,7 @@ app.use(async (ctx) => {
     const topics = (await pool.query(`SELECT t.id,t.code,t.title,t.description,t.published,t.opens_at,t.closes_at,t.capacity,
       (SELECT string_agg(r.code, ', ' ORDER BY r.opens_at) FROM academic.topic_round_windows w JOIN academic.rounds r ON r.id=w.round_id WHERE w.topic_id=t.id) AS round_codes
       FROM academic.topics t WHERE t.lecturer_id=$1 ORDER BY t.created_at DESC`, [lecturerTopics[1]])).rows
-    ctx.body = await Promise.all(topics.map(async (topic) => {
-      const counts = await fetch(`http://registration-service:3103/internal/v1/registrations/topics/${topic.id}/counts`).then((response) => response.json()).catch(() => ({ pending: 0, registered: 0 }))
-      return { ...topic, ...counts }
-    }))
+    ctx.body = topics
     return
   }
   const internalClasses = ctx.path.match(/^\/internal\/v1\/academic\/departments\/([^/]+)\/classes$/)

@@ -1,46 +1,42 @@
-# Kiến trúc dịch vụ
+# Kiến trúc SOA của QL Đề Tài
 
-## Mục tiêu
+## Đánh giá trước đợt chỉnh sửa này
 
-Chuyển hệ thống hiện tại từ một API Koa truy vấn trực tiếp một PostgreSQL chung sang các dịch vụ nghiệp vụ độc lập. Mỗi dịch vụ sở hữu PostgreSQL server, schema và vòng đời dữ liệu riêng. Dịch vụ khác chỉ truy cập dữ liệu qua API; không dùng khóa ngoại, truy vấn chéo database hoặc dùng chung connection string.
+Dự án đã tách Identity, Academic và Registration thành ba dịch vụ với ba PostgreSQL riêng, nên đã có nền tảng SOA. Tuy nhiên, ranh giới chưa được bảo vệ đầy đủ: hợp đồng nội bộ chưa xác thực, token đang chờ MFA vẫn có thể vào API nghiệp vụ, lỗi phụ thuộc có thể chờ lâu hoặc trả sai trạng thái, tổng hợp dữ liệu tạo vòng gọi giữa Academic và Registration, và đóng đợt/ẩn đề tài có thể chạy đua với đăng ký. Luồng quản trị thiếu khóa/đặt lại tài khoản và màn hình theo dõi đơn. Đợt chỉnh sửa này củng cố các ranh giới và bổ sung các chức năng đó trên cấu trúc ba database hiện có, giữ nguyên dữ liệu trong volume.
 
-## Ranh giới dịch vụ
+## Ranh giới và quyền sở hữu dữ liệu
 
-| Thành phần | Sở hữu | API/luồng chính | Database |
-|---|---|---|---|
-| Identity | Tài khoản, vai trò, trạng thái, xác thực, MFA, hồ sơ cá nhân | Đăng nhập, mật khẩu, passkey, TOTP, cấp tài khoản, hồ sơ | `identity-db` |
-| Academic | Khoa, lớp, học kỳ, đợt, đề tài, thời hạn đề tài | Quản trị học vụ, công bố và tra cứu đề tài | `academic-db` |
-| Registration | Đăng ký đề tài, quyết định, lịch sử, sức chứa và các điều kiện đăng ký | Gửi/hủy/duyệt đăng ký | `registration-db` |
-| API Gateway | Không sở hữu dữ liệu nghiệp vụ; xác thực JWT và định tuyến/tổng hợp phản hồi | Giữ hợp đồng `/api` hiện tại cho frontend | Không có |
-| Web | Tài nguyên giao diện tĩnh | React, chuyển tiếp `/api` tới gateway | Không có |
+| Dịch vụ | Dữ liệu sở hữu | PostgreSQL |
+|---|---|---|
+| Identity | Tài khoản, vai trò, hồ sơ, mật khẩu, TOTP, Passkey, nhật ký bảo mật | `identity-db` và volume `qldetai_identity_data` |
+| Academic | Khoa, lớp, học kỳ, đợt đăng ký, đề tài | `academic-db` và volume `qldetai_academic_data` |
+| Registration | Đơn đăng ký, quyết định, lịch sử, quyền nhận đơn theo đợt/đề tài | `registration-db` và volume `qldetai_registration_data` |
+| API Gateway | Định tuyến và tổng hợp API; không lưu nghiệp vụ | Không có |
+| Web | Giao diện React và chuyển tiếp `/api` | Không có |
 
-Các ID tham chiếu giữa dịch vụ là UUID bất biến, không phải khóa ngoại. Academic lưu `lecturer_id`; Registration lưu `student_id`, `topic_id`, `round_id` và snapshot cần thiết cho lịch sử. Registration hỏi Academic về trạng thái đề tài/đợt và áp dụng điều kiện đăng ký trong transaction cục bộ. Với thao tác cần cập nhật nhiều dịch vụ, gateway điều phối theo saga và có bước bù; không giả lập transaction phân tán.
+Mỗi PostgreSQL là một container, database và volume riêng trên cùng máy Docker. Không có khóa ngoại hay truy vấn SQL xuyên dịch vụ. Tham chiếu xuyên miền bằng UUID và dữ liệu tóm tắt cần cho lịch sử đăng ký. Chỉ web công khai cổng máy chủ; các database và API ở mạng Docker nội bộ. Có thể triển khai từng thành phần trên máy riêng trong tương lai, nhưng bản Compose hiện tại vẫn có điểm lỗi chung là máy Docker.
 
-## Giao tiếp và khả năng chịu lỗi
+## Hợp đồng giữa các dịch vụ
 
-- Frontend chỉ gọi API Gateway; không gọi thẳng service nội bộ.
-- Gateway kiểm tra JWT, role và chuyển tiếp identity claims qua mạng nội bộ.
-- Service chỉ mở cổng trong mạng Compose; chỉ Gateway và health checks được truy cập chúng.
-- Mỗi service có `/health` (liveness) và `/ready` (database readiness), timeout và giới hạn kết nối độc lập.
-- Request giữa dịch vụ có timeout rõ ràng; lỗi dịch vụ phụ thuộc trả 503, không trả dữ liệu giả.
-- Các endpoint thay đổi dữ liệu nhận `Idempotency-Key` khi gateway điều phối saga để có thể thử lại an toàn.
+- Trình duyệt chỉ gọi `/api` qua Nginx và Gateway. Gateway chỉ định tuyến các đường dẫn công khai cho từng dịch vụ.
+- Các đường dẫn `/internal/v1/...` yêu cầu token dịch vụ ký riêng, có đối tượng nhận và thời hạn ngắn. Token đăng nhập của người dùng không được dùng như token dịch vụ. Gateway không công khai đường dẫn nội bộ.
+- Mọi API nghiệp vụ kiểm tra vai trò và trạng thái tài khoản ở phía máy chủ. Token còn hạn của tài khoản đã khóa hoặc đã đổi mật khẩu bị từ chối nhờ phiên bản token.
+- Các lời gọi giữa dịch vụ có thời gian chờ giới hạn. `/health` thể hiện tiến trình còn sống; `/ready` kiểm tra khả năng phục vụ và các phụ thuộc cần thiết.
 
-## Di chuyển dữ liệu và cutover
+## Giao dịch đăng ký và lỗi từng phần
 
-1. Giữ nguyên volume PostgreSQL cũ; tạo backup có thể khôi phục trước khi chuyển.
-2. Tạo ba PostgreSQL server/volume mới và bootstrap schema riêng cho từng dịch vụ.
-3. Chuyển dữ liệu theo quyền sở hữu; kiểm tra số dòng, khóa duy nhất và quan hệ UUID.
-4. Chạy dịch vụ mới song song trên cổng nội bộ, kiểm tra health và hợp đồng API.
-5. Chỉ đổi Gateway/frontend sang service mới sau khi smoke test nghiệp vụ đạt.
-6. Giữ cấu hình/volume cũ để rollback; chỉ dọn sau một giai đoạn vận hành ổn định và có xác nhận riêng.
+Registration là nơi quyết định một đơn có được nhận hay không. Giao dịch PostgreSQL của dịch vụ này khóa theo đợt và đề tài, kiểm tra giới hạn một đơn hoạt động cho mỗi sinh viên trong một đợt, đếm chỗ còn trống rồi mới ghi. Mã yêu cầu `requestId` cho phép gửi lại cùng nội dung sau khi mất phản hồi mà không tạo thêm đơn; dùng cùng mã cho nội dung khác bị từ chối.
 
-Bootstrap không tự xóa volume, không chạy `down -v`, không ghi ngược vào database cũ. Không đưa mật khẩu hay dữ liệu thật vào Git.
+Trạng thái mở đợt hoặc công bố đề tài thuộc Academic. Khi đóng/ẩn, Academic yêu cầu Registration khóa tiếp nhận theo cùng khóa đăng ký trước khi đổi trạng thái. Nếu không liên lạc được Registration, thao tác đóng/ẩn thất bại có kiểm soát thay vì công bố một trạng thái không nhất quán. Nếu khóa tiếp nhận đã ghi nhưng cập nhật metadata ở Academic thất bại, tiếp nhận vẫn đóng để bảo toàn điều kiện; quản trị cần thử lại thao tác để đồng bộ. Đây là phối hợp giữa hai dịch vụ; không phải giao dịch ACID xuyên database.
 
-## Trạng thái triển khai
+Khi database Registration ngắt kết nối, API không xác nhận đăng ký thành công. Giao diện giữ danh sách đề tài đã tải trong trình duyệt và giữ yêu cầu ở trạng thái **chờ xử lý** trong localStorage để gửi lại khi kết nối hồi phục. Hàng chờ này gắn với trình duyệt và tài khoản đang dùng; xóa dữ liệu trình duyệt hoặc đổi máy trước khi gửi lại sẽ mất yêu cầu chưa tới máy chủ. Sau khi gửi lại, chỉ phản hồi từ Registration mới xác nhận thành công. Khi Identity mất kết nối, hệ thống từ chối xác thực để tránh dùng phiên đã bị thu hồi.
 
-- Identity, Academic và Registration có mỗi service một PostgreSQL server và một named volume riêng.
-- API Gateway là điểm vào duy nhất cho `/api`; Nginx nội bộ chuyển tiếp tới Gateway. Chỉ cổng web `5173` được công khai.
-- Dữ liệu tài khoản, MFA/Passkey, khoa/lớp, đề tài, đợt và đăng ký đã được chuyển từ database cũ sang các volume domain.
-- Luồng đăng nhập, MFA, bảo mật, quản lý khoa/lớp/đợt/tài khoản, hồ sơ, đề tài và đăng ký được phục vụ qua Gateway/domain services.
-- Trình quản lý dịch vụ không còn khởi chạy Koa monolith hoặc database dùng chung. Khi nâng cấp máy cũ, nó loại bỏ container API/database cũ nhưng giữ lại volume cũ như bản lưu; không xóa volume tự động.
-- Dùng `docker compose --profile soa up -d --build` để bật nền tảng. Không dùng `down -v`; thao tác đó xóa dữ liệu các service.
+## Khởi tạo và nâng cấp
+
+Schema khởi tạo từ `services/<domain>/schema.sql` khi volume tương ứng còn trống. Khi volume đã có dữ liệu, mỗi dịch vụ chạy migration bổ sung có khóa đồng bộ lúc khởi động. Chạy lại Compose không xóa dữ liệu và không tạo lại tài khoản quản trị. Tuyệt đối không dùng `docker compose down -v` trên dữ liệu cần giữ. Sao lưu cả ba volume trước khi nâng cấp bản đang dùng thực tế.
+
+## Mức bảo đảm hiện tại
+
+Đây là SOA theo ranh giới nghiệp vụ, quyền sở hữu dữ liệu và hợp đồng API. Nó chưa có cơ chế chịu lỗi ở cấp máy chủ: một máy Docker hỏng thì toàn bộ hệ thống dừng. Hàng chờ đăng ký ở trình duyệt không thay cho hàng đợi bền vững phía máy chủ. Chưa có điều phối giao dịch phân tán hoặc tự động chuyển sang máy dự phòng. Các giới hạn này cần được tính đến nếu triển khai sản xuất nhiều người dùng.
+
+Xem `docs/VERIFICATION.md` để chạy kiểm thử cài mới, phân quyền, tranh chấp chỗ cuối và ngắt kết nối từng dịch vụ/database.

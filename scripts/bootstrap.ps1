@@ -36,6 +36,7 @@ function Get-WingetPath {
 }
 
 function Install-WithWinget([string]$PackageId) {
+  if (-not $script:winget) { $script:winget = Get-WingetPath }
   Write-Host "Đang cài $PackageId bằng WinGet..." -ForegroundColor Cyan
   & $script:winget install --id $PackageId --exact --silent --accept-source-agreements
   if ($LASTEXITCODE -ne 0) {
@@ -89,8 +90,6 @@ if ($InstallWsl) {
 
 try {
   Set-Location $projectRoot
-  $script:winget = Get-WingetPath
-
   if (-not (Test-Dotnet10)) { Install-WithWinget 'Microsoft.DotNet.SDK.10' }
   if (-not (Test-Dotnet10)) { throw 'Chưa tìm thấy .NET SDK 10 sau khi cài. Đóng cửa sổ này, mở Terminal mới rồi chạy lại.' }
 

@@ -1,15 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import Portal from './Portal'
-import AccountManagement from './AccountManagement'
-import RegistrationRounds from './RegistrationRounds'
+import AdminDashboard from './AdminDashboard'
+import { fetchWithTimeout as fetch } from './api'
 import { startAuthentication } from '@simplewebauthn/browser'
 import './App.css'
-
-type Overview = {
-  stats: { students: number; lecturers: number; topics: number; pendingRegistrations: number; rounds: number }
-  recentTopics: { code: string; title: string; published: boolean; department: string | null; created_at: string }[]
-}
 
 const API = '/api'
 const isAdminPortal = window.location.pathname.startsWith('/admin')
@@ -25,43 +20,23 @@ function App() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [overview, setOverview] = useState<Overview | null>(null)
   const [mfaToken, setMfaToken] = useState('')
   const [mfaCode, setMfaCode] = useState('')
   const [mfaMethods, setMfaMethods] = useState<{ totp: boolean; passkey: boolean }>({ totp: false, passkey: false })
 
   useEffect(() => {
-    if (!token) return
-    if (!isAdminPortal) return
-    let cancelled = false
-    let retryTimer = 0
-    const load = async (attempt: number) => {
-      try {
-        const response = await fetch(`${API}/admin/overview`, { headers: { Authorization: `Bearer ${token}` } })
-        const body = await response.json().catch(() => ({}))
-        if (response.status === 401) {
-          if (!cancelled) { setError(body.error ?? 'Phiên đăng nhập đã hết hạn.'); setToken(''); sessionStorage.removeItem(tokenKey) }
-          return
-        }
-        if (!response.ok) throw new Error(body.error ?? 'Dịch vụ đang khôi phục kết nối.')
-        if (!cancelled) { setOverview(body as Overview); setError('') }
-      } catch (reason) {
-        if (cancelled) return
-        setError(reason instanceof Error ? reason.message : 'Không kết nối được máy chủ.')
-        if (attempt < 4) retryTimer = window.setTimeout(() => void load(attempt + 1), Math.min(1000 * (2 ** attempt), 8000))
-      }
+    const expire = () => {
+      sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(changeRequiredKey)
+      setToken(''); setMfaToken(''); setPassword(''); setMustChangePassword(false)
+      setError('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')
     }
-    void load(0)
-    return () => { cancelled = true; window.clearTimeout(retryTimer) }
-  }, [token])
+    window.addEventListener('qldetai:session-expired', expire)
+    return () => window.removeEventListener('qldetai:session-expired', expire)
+  }, [])
 
   function completeLogin(result: { token: string; role: string; mustChangePassword: boolean }) {
-    if (isAdminPortal && result.role !== 'QUAN_TRI') { window.location.assign('/login'); return }
-    if (!isAdminPortal && result.role === 'QUAN_TRI') {
-      sessionStorage.setItem('adminToken', result.token)
-      sessionStorage.setItem('adminTokenChangeRequired', String(result.mustChangePassword))
-      window.location.assign('/admin')
-      return
+    if ((isAdminPortal && result.role !== 'QUAN_TRI') || (!isAdminPortal && !['SINH_VIEN', 'GIANG_VIEN'].includes(result.role))) {
+      setError('Sai tên đăng nhập hoặc mật khẩu.'); setMfaToken(''); return
     }
     sessionStorage.setItem(tokenKey, result.token)
     sessionStorage.setItem(changeRequiredKey, String(result.mustChangePassword))
@@ -80,7 +55,7 @@ function App() {
       const response = await fetch(`${API}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, portal: isAdminPortal ? 'admin' : 'portal' }),
       })
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.error ?? 'Không thể đăng nhập.')
@@ -181,42 +156,13 @@ function App() {
     )
   }
 
-  return (
-    <main className="admin-shell">
-      <aside className="sidebar">
-        <div className="side-brand">DEMO</div>
-        <p className="nav-label">MENU</p>
-        <a className="nav-item active" href="#overview"><span>▦</span>Tổng quan</a>
-        <a className="nav-item" href="#topics"><span>▤</span>Đề tài</a>
-        <a className="nav-item" href="#registrations"><span>☷</span>Đăng ký <b>{overview?.stats.pendingRegistrations ?? 0}</b></a>
-        <a className="nav-item" href="#accounts"><span>♙</span>Tài khoản</a>
-        <a className="nav-item" href="#rounds"><span>◷</span>Đợt đăng ký</a>
-        <a className="nav-item" href="#departments"><span>⌂</span>Khoa</a>
-        <div className="sidebar-bottom"><span className="avatar">AD</span><span>Quản trị viên<small>admin.demo</small></span><button onClick={() => { sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(changeRequiredKey); window.history.replaceState(null, '', '/admin'); setToken(''); setOverview(null) }} aria-label="Đăng xuất">↗</button></div>
-      </aside>
-      <section className="admin-content" id="overview">
-        <header className="topbar"><div><p className="eyebrow">01 / TRUNG TÂM ĐIỀU HÀNH</p><h1>Tổng quan</h1></div><div className="topbar-date">CỔNG QUẢN TRỊ <span>•</span> HỌC VỤ</div></header>
-        {error && <div className="notice">{error}</div>}
-        {!overview ? <div className="loading-card">Đang tải số liệu quản trị…</div> : <>
-          <section className="stat-grid" aria-label="Thống kê">
-            <article className="stat-card"><span className="stat-icon">▤</span><p>Tổng đề tài</p><strong>{overview.stats.topics}</strong><small>Trong hệ thống</small></article>
-            <article className="stat-card"><span className="stat-icon">☷</span><p>Đăng ký chờ duyệt</p><strong>{overview.stats.pendingRegistrations}</strong><small>Cần xử lý</small></article>
-            <article className="stat-card"><span className="stat-icon">♙</span><p>Sinh viên</p><strong>{overview.stats.students}</strong><small>Tài khoản sinh viên</small></article>
-            <article className="stat-card"><span className="stat-icon">♧</span><p>Giảng viên</p><strong>{overview.stats.lecturers}</strong><small>Tài khoản giảng viên</small></article>
-          </section>
-          <section className="content-card" id="topics">
-            <div className="card-heading"><div><h2>Đề tài mới cập nhật</h2><p>Danh sách đề tài được tạo gần đây</p></div><button className="outline-button">Quản lý đề tài <span>→</span></button></div>
-            <div className="table-wrap"><table><thead><tr><th>MÃ ĐỀ TÀI</th><th>TÊN ĐỀ TÀI</th><th>KHOA</th><th>TRẠNG THÁI</th></tr></thead><tbody>
-              {overview.recentTopics.length ? overview.recentTopics.map((topic) => <tr key={topic.code}><td className="code-cell">{topic.code}</td><td className="title-cell">{topic.title}</td><td>{topic.department ?? 'Chưa phân khoa'}</td><td><span className={`status-pill ${topic.published ? 'published' : 'draft'}`}>{topic.published ? 'Đã công bố' : 'Bản nháp'}</span></td></tr>) : <tr><td colSpan={4} className="empty-state">Chưa có đề tài. Tạo khoa và đề tài để bắt đầu quản lý.</td></tr>}
-            </tbody></table></div>
-          </section>
-          <section className="bottom-grid"><article className="content-card compact-card"><div className="card-heading"><div><h2>Đợt đăng ký</h2><p>Các đợt đang được cấu hình</p></div></div><div className="round-total"><strong>{overview.stats.rounds}</strong><span>đợt đăng ký</span></div></article><article className="content-card compact-card"><div className="card-heading"><div><h2>Việc cần làm</h2><p>Tình trạng xử lý hiện tại</p></div></div><div className="task-row"><span className="task-dot"/>Đăng ký chờ duyệt<strong>{overview.stats.pendingRegistrations}</strong></div></article></section>
-          <RegistrationRounds token={token} />
-          <AccountManagement token={token} />
-        </>}
-      </section>
-    </main>
-  )
+  return <AdminDashboard token={token} onLogout={() => {
+    sessionStorage.removeItem(tokenKey)
+    sessionStorage.removeItem(changeRequiredKey)
+    window.history.replaceState(null, '', '/admin')
+    setToken(''); setError(''); setPassword('')
+  }}/>
+
 }
 
 export default App

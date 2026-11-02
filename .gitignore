@@ -1,6 +1,8 @@
 node_modules/
 service-manager/bin/
 service-manager/obj/
+service-manager/tests/bin/
+service-manager/tests/obj/
 dist/
 dist-ssr/
 *.local
@@ -10,3 +12,4 @@ dist-ssr/
 !.env.docker.example
 database/*.dump
 database/backups/
+test-results/

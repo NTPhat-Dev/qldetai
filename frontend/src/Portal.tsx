@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import PersonalSettings from './PersonalSettings'
+import { api, fetchWithTimeout as fetch, newRequestId, shouldRetainQueuedRequest } from './api'
 
 type Topic = {
   id: string; code: string; title: string; description?: string; lecturer?: string; department?: string
@@ -9,7 +10,7 @@ type Topic = {
 }
 type Registration = {
   id: string; code?: string; title?: string; status: string; round_id?: string; submitted_at?: string
-  reason?: string; student_code?: string; student_name?: string; topic_id?: string
+  reason?: string; note?: string; history?: { new_status: string; changed_at: string; note?: string }[]; student_code?: string; student_name?: string; topic_id?: string
   topic_code?: string; topic_title?: string; round_code?: string
 }
 type PendingRegistration = {
@@ -51,42 +52,29 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>(() => readLocalList<PendingRegistration>(outboxKey))
   const pendingRef = useRef(pendingRegistrations)
   const syncingRef = useRef(false)
-  const [page, setPage] = useState<'home'|'profile'|'settings'>('home')
+  const [page, setPage] = useState<'home'|'registrations'|'review'|'profile'|'settings'>('home')
+  const [query, setQuery] = useState('')
+  const [stale, setStale] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
   const reload = useCallback(async () => {
-    let lastError: Error | null = null
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      try {
-        const response = await fetch(`${API}/portal/overview`, { headers: { Authorization: `Bearer ${token}` } })
-        const body = await response.json().catch(() => ({}))
-        if (!response.ok) {
-          if (response.status < 500 || attempt === 3) throw new Error(body.error ?? 'Không thể tải dữ liệu tài khoản.')
-          lastError = new Error(body.error ?? 'Dịch vụ đang khôi phục kết nối…')
-        } else {
-          setData(body as PortalData)
-          try { sessionStorage.setItem(dataCacheKey, JSON.stringify(body)) } catch { }
-          setError('')
-          return
-        }
-      } catch (reason) {
-        lastError = reason instanceof Error ? reason : new Error('Không kết nối được dịch vụ.')
-        if (attempt === 3) throw lastError
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 700 * (attempt + 1)))
-    }
-    throw lastError ?? new Error('Không thể tải dữ liệu tài khoản.')
+    const body = await api<PortalData>('/portal/overview', token)
+    setData(body)
+    try { sessionStorage.setItem(dataCacheKey, JSON.stringify(body)) } catch { }
+    setStale(false); setError('')
   }, [dataCacheKey, token])
 
   useEffect(() => {
-    reload().catch((reason: Error) => {
-      if (readSessionValue<PortalData>(dataCacheKey)) {
-        setError('')
-        setMessage('Đang hiển thị danh sách đã tải trước đó. Hệ thống sẽ cập nhật lại khi kết nối phục hồi.')
-      } else setError(reason.message)
+    const refresh = () => void reload().catch((reason: Error) => {
+      setStale(true)
+      if (!readSessionValue<PortalData>(dataCacheKey)) setError(reason.message)
     })
+    refresh()
+    const interval = window.setInterval(refresh, 15000)
+    window.addEventListener('online', refresh)
+    return () => { window.clearInterval(interval); window.removeEventListener('online', refresh) }
   }, [dataCacheKey, reload])
 
   useEffect(() => {
@@ -116,7 +104,7 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
         body: JSON.stringify({ requestId: item.requestId, topicId: item.topicId, roundId: item.roundId, reason: item.reason }),
       })
       const result = await response.json().catch(() => ({}))
-      if (response.status >= 500) {
+      if (shouldRetainQueuedRequest(response.status)) {
         setMessage('Kết nối máy chủ đang gián đoạn. Yêu cầu đã được lưu và sẽ tự gửi lại khi kết nối phục hồi.')
         return false
       }
@@ -142,11 +130,12 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
     const retryQueue = async () => {
       if (syncingRef.current || !navigator.onLine || pendingRef.current.length === 0) return
       syncingRef.current = true
+      setBusy(true)
       try {
         for (const item of pendingRef.current) {
           if (!await sendPending(item)) break
         }
-      } finally { syncingRef.current = false }
+      } finally { syncingRef.current = false; setBusy(false) }
     }
     const interval = window.setInterval(() => void retryQueue(), 10000)
     window.addEventListener('online', retryQueue)
@@ -157,7 +146,7 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   async function registerTopic(topic: Topic, reason: string) {
     if (syncingRef.current) return
     const item: PendingRegistration = {
-      requestId: crypto.randomUUID(), topicId: topic.id, roundId: topic.round_id!,
+      requestId: newRequestId(), topicId: topic.id, roundId: topic.round_id!,
       topicCode: topic.code, topicTitle: topic.title, roundCode: topic.round_code ?? '', reason, createdAt: new Date().toISOString(),
     }
     syncingRef.current = true
@@ -173,7 +162,7 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
       const response = await fetch(`${API}${path}`, { method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: payload === undefined ? undefined : JSON.stringify(payload) })
       const result = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(result.error ?? 'Không thực hiện được yêu cầu.')
-      await reload()
+      await reload().catch(() => setStale(true))
       setMessage('Đã lưu thay đổi.')
       return true
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thực hiện được yêu cầu.'); return false }
@@ -188,40 +177,43 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
     if (await submit('/portal/topics', 'POST', payload)) form.reset()
   }
 
-  if (error && !data) return <main className="portal-error"><p>{error}</p><button className="dark-button" onClick={onLogout}>Đăng xuất</button></main>
+  if (error && !data) return <main className="portal-error"><p>{error}</p><button className="outline-button" onClick={() => void reload().catch((reason: Error) => setError(reason.message))}>Thử lại</button><button className="dark-button" onClick={onLogout}>Đăng xuất</button></main>
   if (!data) return <main className="portal-error">Đang tải cổng thông tin…</main>
 
   const student = data.role === 'SINH_VIEN'
   const name = data.profile?.ho_ten ?? 'Người dùng'
   const registrations = data.registrations ?? []
+  const filteredTopics = data.topics.filter((topic) => `${topic.title} ${topic.code} ${topic.lecturer ?? ''} ${topic.department ?? ''}`.toLocaleLowerCase('vi').includes(query.toLocaleLowerCase('vi')))
   const visibleRegistrations: Registration[] = student
-    ? [...pendingRegistrations.map((item) => ({
+    ? [...pendingRegistrations.filter((item) => !registrations.some((registration) => registration.id === item.requestId)).map((item) => ({
       id: item.requestId, code: item.topicCode, title: item.topicTitle, status: 'DANG_CHO_XU_LY',
       round_id: item.roundId, round_code: item.roundCode, submitted_at: item.createdAt,
     })), ...registrations]
     : registrations
   return (
     <main className="user-portal">
-      <header className="portal-header"><a className="portal-brand" href="/portal">DEMO</a><nav><button className={page === 'home' ? 'selected' : ''} onClick={() => setPage('home')}>Tổng quan</button><button onClick={() => { setPage('home'); setTimeout(() => document.getElementById(student ? 'topics' : 'my-topics')?.scrollIntoView(), 0) }}>{student ? 'Tìm đề tài' : 'Đề tài của tôi'}</button>{student && <button onClick={() => { setPage('home'); setTimeout(() => document.getElementById('registrations')?.scrollIntoView(), 0) }}>Đăng ký của tôi</button>}{!student && <button onClick={() => { setPage('home'); setTimeout(() => document.getElementById('review')?.scrollIntoView(), 0) }}>Duyệt đăng ký</button>}<button className={page === 'profile' ? 'selected' : ''} onClick={() => setPage('profile')}>Thông tin cá nhân</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => setPage('settings')}>Cài đặt</button></nav><div className="portal-user"><span>{name}</span><button onClick={onLogout}>Đăng xuất</button></div></header>
+      <header className="portal-header"><a className="portal-brand" href="/portal">DEMO</a><nav aria-label="Cổng người dùng"><button className={page === 'home' ? 'selected' : ''} onClick={() => setPage('home')}>{student ? 'Tìm đề tài' : 'Đề tài của tôi'}</button><button className={page === (student ? 'registrations' : 'review') ? 'selected' : ''} onClick={() => setPage(student ? 'registrations' : 'review')}>{student ? 'Đăng ký của tôi' : 'Duyệt đăng ký'}</button><button className={page === 'profile' ? 'selected' : ''} onClick={() => setPage('profile')}>Hồ sơ</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => setPage('settings')}>Cài đặt</button></nav><div className="portal-user"><span>{name}</span><button onClick={onLogout}>Đăng xuất</button></div></header>
       <section className="portal-main" id="home">
         <p className="eyebrow">CỔNG {student ? 'SINH VIÊN' : 'GIẢNG VIÊN'}</p>
-        <h1>Xin chào, {name}</h1>
-        <p className="portal-intro">{student ? 'Khám phá đề tài phù hợp và theo dõi tiến độ đăng ký.' : 'Quản lý đề tài hướng dẫn và xử lý đăng ký của sinh viên.'}</p>
-        {student && <p className="server-clock-note">Hạn chốt theo giờ máy chủ · Đồng hồ hệ thống ghi nhận {data.serverTime ? new Date(data.serverTime).toLocaleString('vi-VN') : 'vừa cập nhật'}</p>}
+        <div className="page-heading"><h1>{page === 'home' ? `Xin chào, ${name}` : page === 'registrations' ? 'Đăng ký của tôi' : page === 'review' ? 'Duyệt đăng ký' : page === 'profile' ? 'Hồ sơ cá nhân' : 'Cài đặt tài khoản'}</h1><button className="outline-button" disabled={busy} onClick={() => void reload().catch(() => setStale(true))}>Làm mới</button></div>
+        {page === 'home' && <p className="portal-intro">{student ? 'Khám phá đề tài phù hợp và theo dõi tiến độ đăng ký.' : 'Quản lý đề tài hướng dẫn và xử lý đăng ký của sinh viên.'}</p>}
+        {student && page === 'home' && <p className="server-clock-note">Hạn chốt theo giờ máy chủ · Đồng hồ hệ thống ghi nhận {data.serverTime ? new Date(data.serverTime).toLocaleString('vi-VN') : 'vừa cập nhật'}</p>}
+        {stale && <p className="account-message" role="status">Đang hiển thị dữ liệu đã tải trước đó. Yêu cầu đăng ký được giữ ở trạng thái chờ; hệ thống tự đồng bộ khi kết nối phục hồi.</p>}
         {error && <p className="account-message" role="alert">{error}</p>}{message && <p className="account-message" role="status">{message}</p>}
-        <section className="portal-summary">
+        {page === 'home' && <section className="portal-summary">
           <article><span>{student ? 'MÃ SINH VIÊN' : 'MÃ GIẢNG VIÊN'}</span><strong>{data.profile?.ma_sinh_vien ?? data.profile?.ma_giang_vien ?? '—'}</strong></article>
           {student && <article><span>LỚP</span><strong>{data.profile?.lop ?? '—'}</strong></article>}
           <article><span>{student ? 'ĐỀ TÀI ĐANG MỞ' : 'ĐỀ TÀI CỦA TÔI'}</span><strong>{data.topics.length}</strong></article>
           {student && <article><span>ĐƠN ĐĂNG KÝ</span><strong>{visibleRegistrations.length}</strong></article>}
           {!student && <article><span>ĐĂNG KÝ CHỜ DUYỆT</span><strong>{registrations.filter((item) => item.status === 'CHO_DUYET').length}</strong></article>}
-        </section>
+        </section>}
         {page === 'profile' ? <PersonalSettings token={token} page="profile" onTokenChange={onTokenChange}/> : page === 'settings' ? <PersonalSettings token={token} page="settings" onTokenChange={onTokenChange}/> : student ? <>
-          <section className="portal-section" id="topics">
+          <section className="portal-section" id="topics" hidden={page !== 'home'}>
             <div className="portal-section-head"><div><h2>Đề tài đang mở</h2><p>Chỉ hiển thị đề tài trong thời hạn của đợt đăng ký</p></div></div>
-            <div className="topic-grid">{data.topics.length ? data.topics.map((topic) => {
+            <div className="filter-bar"><input aria-label="Tìm đề tài" placeholder="Tìm tên đề tài, mã, giảng viên hoặc khoa" value={query} onChange={(event) => setQuery(event.target.value)}/></div>
+            <div className="topic-grid">{filteredTopics.length ? filteredTopics.map((topic) => {
               const existing = registrations.find((item) => item.round_id === topic.round_id && ['CHO_DUYET', 'DA_DUYET'].includes(item.status))
-              const queued = pendingRegistrations.some((item) => item.topicId === topic.id && item.roundId === topic.round_id)
+              const queued = pendingRegistrations.some((item) => item.roundId === topic.round_id)
               const full = topic.capacity != null && (topic.registered ?? 0) >= topic.capacity
               return <article className="topic-card" key={`${topic.id}-${topic.round_id}`}>
                 <span className="topic-code">{topic.code} · Đợt {topic.round_code}</span><h3>{topic.title}</h3><p>{topic.description || 'Chưa có mô tả.'}</p>
@@ -231,25 +223,28 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
                   <button className="dark-button" disabled={busy || queued || Boolean(existing) || full}>{queued ? 'Đang chờ xử lý' : existing ? 'Đã có đăng ký trong đợt' : full ? 'Đề tài đã đủ số lượng' : 'Gửi đăng ký'}</button>
                 </form>
               </article>
-            }) : <div className="portal-empty">Hiện không có đề tài nào đang trong thời hạn đăng ký.</div>}</div>
+            }) : <div className="portal-empty">{query ? 'Không có đề tài phù hợp với từ khóa.' : 'Hiện không có đề tài nào đang trong thời hạn đăng ký.'}</div>}</div>
           </section>
-          <section className="portal-section" id="registrations"><h2>Lịch sử đăng ký</h2><div className="portal-table">{visibleRegistrations.length ? visibleRegistrations.map((item) => <div className="portal-row" key={item.id}><span>{item.code}</span><strong>{item.title}</strong><em className={item.status === 'DANG_CHO_XU_LY' ? 'pending-status' : undefined}>{statusNames[item.status] ?? item.status}</em><small>{localDateTime(item.submitted_at)}</small>{item.status === 'CHO_DUYET' && <button className="outline-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/cancel`, 'PATCH')}>Hủy đơn</button>}</div>) : <div className="portal-empty">Bạn chưa gửi đăng ký đề tài nào.</div>}</div></section>
+          <section className="portal-section" id="registrations" hidden={page !== 'registrations'}><h2>Lịch sử đăng ký</h2><div className="portal-table">{visibleRegistrations.length ? visibleRegistrations.map((item) => <div className="portal-row" key={item.id}><span>{item.code}</span><strong>{item.title}</strong><em className={item.status === 'DANG_CHO_XU_LY' ? 'pending-status' : undefined}>{statusNames[item.status] ?? item.status}</em><small>{localDateTime(item.submitted_at)}</small>{item.note && <span className="registration-note">Phản hồi: {item.note}</span>}{item.status === 'DANG_CHO_XU_LY' && <button className="outline-button" disabled={busy} onClick={() => { savePending(pendingRef.current.filter((queued) => queued.requestId !== item.id)); setMessage('Đã bỏ yêu cầu chưa gửi. Đăng ký chưa được máy chủ tiếp nhận.') }}>Bỏ yêu cầu chưa gửi</button>}{item.status === 'CHO_DUYET' && <button className="outline-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/cancel`, 'PATCH')}>Hủy đơn</button>}</div>) : <div className="portal-empty">Bạn chưa gửi đăng ký đề tài nào.</div>}</div></section>
         </> : <>
-          <section className="portal-section" id="my-topics">
+          <section className="portal-section" id="my-topics" hidden={page !== 'home'}>
             <div className="portal-section-head"><div><h2>Đề tài của tôi</h2><p>Tạo bản nháp, chọn đợt nhận đăng ký do quản trị viên cấu hình</p></div></div>
             {roundsError && <p className="account-message" role="alert">{roundsError}</p>}
             {rounds.length === 0 && !roundsError && <p className="account-message">Chưa có đợt đăng ký còn hạn. Hãy nhờ quản trị viên tạo đợt trước.</p>}
             <form className="topic-create-form" onSubmit={createTopic}>
-              <label>Tên đề tài<input name="title" required maxLength={240}/></label>
+              <label className="topic-title-field">Tên đề tài<input name="title" required maxLength={240}/></label>
               <label className="topic-description-field">Mô tả<textarea name="description" rows={3}/></label>
               <label>Đợt đăng ký<select name="roundId" required disabled={rounds.length === 0}><option value="">Chọn đợt đăng ký</option>{rounds.map((round) => <option key={round.id} value={round.id}>{round.semester_code} · {round.semester_name} · {round.code} ({round.is_open ? 'Đang mở' : 'Đang đóng'}) · {localDateTime(round.opens_at)} – {localDateTime(round.closes_at)}</option>)}</select></label>
               <label>Số lượng<input name="capacity" type="number" min="1" step="1" required/></label>
               <button className="dark-button" disabled={busy || rounds.length === 0}>Tạo bản nháp</button>
             </form>
             <p className="topic-round-note">Thời gian đăng ký của đề tài sẽ theo đợt bạn chọn.</p>
-            <div className="portal-table">{data.topics.length ? data.topics.map((topic) => <div className="portal-row" key={topic.id}><span>{topic.code}{topic.round_codes ? ` · Đợt ${topic.round_codes}` : ''}</span><strong>{topic.title}</strong><em>{topic.pending ?? 0} chờ duyệt · {topic.registered ?? 0} đang hiệu lực</em><small>{topic.published ? 'Đã công bố' : 'Bản nháp'}</small><button className="outline-button" disabled={busy || (!topic.published && Boolean(topic.registered))} onClick={() => void submit(`/portal/topics/${topic.id}/publication`, 'PATCH', { published: !topic.published })}>{topic.published ? 'Ẩn đề tài' : 'Công bố'}</button></div>) : <div className="portal-empty">Bạn chưa có đề tài hướng dẫn.</div>}</div>
+            <div className="portal-table">{data.topics.length ? data.topics.map((topic) => <article key={topic.id}>
+              <div className="portal-row"><span>{topic.code}{topic.round_codes ? ` · Đợt ${topic.round_codes}` : ''}</span><strong>{topic.title}</strong><em>{topic.pending ?? 0} chờ duyệt · {topic.registered ?? 0} đang hiệu lực</em><small>{topic.published ? 'Đã công bố' : 'Bản nháp'}</small><button className="outline-button" disabled={busy || (Boolean(topic.published) && Boolean(topic.registered))} onClick={() => void submit(`/portal/topics/${topic.id}/publication`, 'PATCH', { published: !topic.published })}>{topic.published ? 'Ẩn đề tài' : 'Công bố'}</button></div>
+              {!topic.published && !topic.registered && <details className="topic-editor"><summary>Sửa bản nháp</summary><form onSubmit={(event) => { event.preventDefault(); void submit(`/portal/topics/${topic.id}`, 'PATCH', Object.fromEntries(new FormData(event.currentTarget).entries())) }}><label>Tên đề tài<input name="title" defaultValue={topic.title} maxLength={240} required/></label><label>Mô tả<textarea name="description" defaultValue={topic.description ?? ''} rows={3}/></label><label>Số lượng<input name="capacity" type="number" min="1" step="1" defaultValue={topic.capacity ?? 1} required/></label><button className="dark-button" disabled={busy}>Lưu bản nháp</button></form></details>}
+            </article>) : <div className="portal-empty">Bạn chưa có đề tài hướng dẫn.</div>}</div>
           </section>
-          <section className="portal-section" id="review"><h2>Đăng ký của sinh viên</h2><div className="portal-table">{registrations.length ? registrations.map((item) => <div className="portal-row review-row" key={item.id}><span>{item.student_code}</span><strong>{item.student_name} · {item.topic_title}</strong><small>Đợt {item.round_code} · {localDateTime(item.submitted_at)}</small><em>{statusNames[item.status] ?? item.status}</em>{item.status === 'CHO_DUYET' && <><button className="dark-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'DA_DUYET' })}>Duyệt</button><button className="outline-button" disabled={busy} onClick={() => { const note = window.prompt('Nhập lý do từ chối:'); if (note?.trim()) void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'TU_CHOI', note }) }}>Từ chối</button></>}</div>) : <div className="portal-empty">Chưa có đăng ký nào.</div>}</div></section>
+          <section className="portal-section" id="review" hidden={page !== 'review'}><h2>Đăng ký của sinh viên</h2><div className="portal-table">{registrations.length ? registrations.map((item) => <div className="portal-row review-row" key={item.id}><span>{item.student_code}</span><strong>{item.student_name} · {item.topic_title}</strong><small>Đợt {item.round_code} · {localDateTime(item.submitted_at)}</small><em>{statusNames[item.status] ?? item.status}</em>{item.reason && <span className="registration-note">Lý do đăng ký: {item.reason}</span>}{item.note && <span className="registration-note">Phản hồi: {item.note}</span>}{item.history?.length ? <details className="registration-note"><summary>Lịch sử xử lý</summary>{item.history.map((event, index) => <p key={index}>{localDateTime(event.changed_at)} · {statusNames[event.new_status] ?? event.new_status}{event.note ? ` · ${event.note}` : ''}</p>)}</details> : null}{item.status === 'CHO_DUYET' && <><button className="dark-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'DA_DUYET' })}>Duyệt</button><button className="outline-button" disabled={busy} onClick={() => { const note = window.prompt('Nhập lý do từ chối:'); if (note?.trim()) void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'TU_CHOI', note }) }}>Từ chối</button></>}</div>) : <div className="portal-empty">Chưa có đăng ký nào.</div>}</div></section>
         </>}
       </section>
     </main>

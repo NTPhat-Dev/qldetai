@@ -1,0 +1,7 @@
+{
+  "name": "qldetai-verification",
+  "private": true,
+  "type": "module",
+  "scripts": { "soa": "node soa-faults.mjs", "browser": "node soa-faults.mjs --browser" },
+  "devDependencies": { "playwright": "1.64.1" }
+}

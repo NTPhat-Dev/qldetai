@@ -1,126 +1,100 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { api } from './api'
 
 type Department = { id: string; code: string; name: string }
 type ClassItem = { id: string; code: string; name: string }
 type Account = { id: string; username: string; role: string; status: string; name: string; profile_code: string; department: string | null }
-const API = '/api/admin'
+type Credentials = { username: string; temporaryPassword: string }
+const roleName = (role: string) => role === 'SINH_VIEN' ? 'Sinh viên' : role === 'GIANG_VIEN' ? 'Giảng viên' : 'Quản trị'
 
-export default function AccountManagement({ token }: { token: string }) {
+export default function AccountManagement({ token, mode = 'accounts' }: { token: string; mode?: 'accounts'|'organization' }) {
   const [departments, setDepartments] = useState<Department[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [role, setRole] = useState('SINH_VIEN')
   const [selectedDepartment, setSelectedDepartment] = useState('')
   const [classes, setClasses] = useState<ClassItem[]>([])
   const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [query, setQuery] = useState('')
+  const [credentials, setCredentials] = useState<Credentials | null>(null)
   const load = useCallback(async () => {
-    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-    const [departmentResponse, accountResponse] = await Promise.all([
-      fetch(`${API}/departments`, { headers }), fetch(`${API}/accounts`, { headers }),
-    ])
-    if (!departmentResponse.ok || !accountResponse.ok) throw new Error('Không tải được dữ liệu quản lý tài khoản.')
-    setDepartments(await departmentResponse.json())
-    setAccounts(await accountResponse.json())
-  }, [token])
-
+    const results = await Promise.allSettled([api<Department[]>('/admin/departments', token), ...(mode === 'accounts' ? [api<Account[]>('/admin/accounts', token)] : [])])
+    if (results[0].status === 'fulfilled') setDepartments(results[0].value)
+    if (results[1]?.status === 'fulfilled') setAccounts(results[1].value as Account[])
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+  }, [mode, token])
+  useEffect(() => { void load().catch((reason: Error) => setError(reason.message)) }, [load])
   useEffect(() => {
-    if (role !== 'SINH_VIEN' || !selectedDepartment) return
+    setClasses([])
+    if (!selectedDepartment) return
     let active = true
-    fetch(`${API}/departments/${selectedDepartment}/classes`, { headers: { Authorization: `Bearer ${token}` } })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('Không tải được danh sách lớp.')
-        return response.json() as Promise<ClassItem[]>
-      })
+    api<ClassItem[]>(`/admin/departments/${selectedDepartment}/classes`, token)
       .then((items) => { if (active) setClasses(items) })
-      .catch((error: Error) => { if (active) setMessage(error.message) })
+      .catch((reason: Error) => { if (active) setError(reason.message) })
     return () => { active = false }
-  }, [role, selectedDepartment, token])
+  }, [selectedDepartment, token])
 
-  useEffect(() => {
-    let active = true
-    const headers = { Authorization: `Bearer ${token}` }
-    Promise.all([fetch(`${API}/departments`, { headers }), fetch(`${API}/accounts`, { headers })])
-      .then(async ([departmentResponse, accountResponse]) => {
-        if (!departmentResponse.ok || !accountResponse.ok) throw new Error('Không tải được dữ liệu quản lý tài khoản.')
-        return Promise.all([departmentResponse.json(), accountResponse.json()]) as Promise<[Department[], Account[]]>
-      })
-      .then(([departmentData, accountData]) => {
-        if (active) { setDepartments(departmentData); setAccounts(accountData) }
-      })
-      .catch((error: Error) => { if (active) setMessage(error.message) })
-    return () => { active = false }
-  }, [token])
-
-  async function createDepartment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const formElement = event.currentTarget
-    const form = new FormData(formElement)
-    setMessage('')
-    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-    const response = await fetch(`${API}/departments`, { method: 'POST', headers, body: JSON.stringify({ name: form.get('name') }) })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok) { setMessage(result.error ?? 'Không tạo được khoa.'); return }
-    formElement.reset()
-    await load()
-    setSelectedDepartment(result.id)
-    setMessage(`Đã tạo khoa ${result.name}, mã tự sinh ${result.code}.`)
-  }
-
-  async function createClass(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const formElement = event.currentTarget
-    const form = new FormData(formElement)
-    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-    const response = await fetch(`${API}/classes`, { method: 'POST', headers, body: JSON.stringify({ departmentId: form.get('departmentId') }) })
-    const result = await response.json().catch(() => ({}))
-    if (!response.ok) { setMessage(result.error ?? 'Không tạo được lớp.'); return }
-    formElement.reset()
-    if (result && form.get('departmentId') === selectedDepartment) {
-      setClasses((current) => [...current, result].sort((a, b) => a.name.localeCompare(b.name)))
-    }
-    setMessage(`Đã thêm lớp ${result.code}.`)
-  }
-
-  async function createAccount(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const formElement = event.currentTarget
-    const form = new FormData(formElement)
-    const payload = Object.fromEntries(form.entries())
-    setMessage('')
-    const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  async function run<T,>(operation: () => Promise<T>, done: (result: T) => void) {
+    setBusy(true); setError(''); setMessage('')
     try {
-      const response = await fetch(`${API}/accounts`, { method: 'POST', headers, body: JSON.stringify({ ...payload, role }) })
-      const result = await response.json().catch(() => ({}))
-      if (!response.ok) { setMessage(result.error ?? 'Không cấp được tài khoản.'); return }
-      formElement.reset()
-      await load()
-      setMessage(`Tài khoản đã cấp — mã/tên đăng nhập: ${result.username}; mật khẩu tạm: ${result.temporaryPassword}. Hãy lưu và gửi riêng cho người dùng; mật khẩu chỉ hiện lần này.`)
-    } catch {
-      setMessage('Không kết nối được dịch vụ. Hãy kiểm tra trình quản lý dịch vụ rồi thử lại.')
-    }
+      const result = await operation()
+      done(result)
+      await load().catch(() => setError('Thao tác đã lưu. Danh sách sẽ cập nhật khi bạn làm mới.'))
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thực hiện được yêu cầu.') }
+    finally { setBusy(false) }
   }
-
-  return <section className="account-management" id="accounts">
-    <div className="card-heading"><div><h2>Cấp tài khoản sinh viên / giảng viên</h2><p>Mã hồ sơ đồng thời là tên đăng nhập; mật khẩu tạm được sinh tự động</p></div></div>
-    {message && <p className="account-message" role="status">{message}</p>}
-    {!departments.length && <form className="department-form" onSubmit={createDepartment}><strong>Tạo khoa đầu tiên</strong><input name="name" placeholder="Tên khoa, ví dụ Công nghệ thông tin" required/><button className="dark-button">Tạo khoa, sinh mã tự động</button></form>}
-    {departments.length > 0 && <form className="department-form" onSubmit={createDepartment}><strong>Thêm khoa</strong><input name="name" placeholder="Tên khoa mới" required/><button className="dark-button">Tạo khoa</button></form>}
-    {departments.length > 0 && <form className="department-form" onSubmit={createClass}><strong>Thêm lớp · mã tự tăng theo khoa (ví dụ CNTT-K1)</strong><select name="departmentId" required><option value="">Chọn khoa</option>{departments.map((department) => <option value={department.id} key={department.id}>{department.name} ({department.code})</option>)}</select><button className="dark-button">Tạo lớp tiếp theo</button></form>}
-    <form className="account-form" onSubmit={createAccount}>
-      <label>Vai trò<select value={role} onChange={(event) => setRole(event.target.value)}><option value="SINH_VIEN">Sinh viên</option><option value="GIANG_VIEN">Giảng viên</option></select></label>
-      <label>Họ và tên<input name="name" required/></label>
-      <label>Khoa<select name="departmentId" value={selectedDepartment} onChange={(event) => { setClasses([]); setSelectedDepartment(event.target.value) }} required disabled={!departments.length}><option value="">Chọn khoa</option>{departments.map((department) => <option value={department.id} key={department.id}>{department.name} ({department.code})</option>)}</select></label>
-      {role === 'SINH_VIEN' ? <>
-        <label>Lớp<select name="classId" required disabled={!selectedDepartment || !classes.length}><option value="">{!selectedDepartment ? 'Chọn khoa trước' : classes.length ? 'Chọn lớp' : 'Khoa chưa có lớp'}</option>{classes.map((item) => <option value={item.id} key={item.id}>{item.name} ({item.code})</option>)}</select></label>
-        <label>Số điện thoại<input name="phone" type="tel"/></label>
-      </> : <>
-        <label>Học hàm<input name="academicTitle" placeholder="Ví dụ: Phó giáo sư"/></label>
-        <label>Học vị<input name="degree" placeholder="Ví dụ: Tiến sĩ"/></label>
-        <label>Chuyên môn<input name="specialization" placeholder="Lĩnh vực chuyên môn"/></label>
-        <label>Số điện thoại<input name="phone" type="tel"/></label>
-      </>}
-      <button className="dark-button" disabled={!departments.length}>Cấp tài khoản</button>
-    </form>
-    <div className="account-list"><h3>Tài khoản đã cấp</h3><div className="table-wrap"><table><thead><tr><th>HỌ TÊN</th><th>TÊN ĐĂNG NHẬP</th><th>VAI TRÒ</th><th>MÃ HỒ SƠ</th><th>KHOA</th><th>TRẠNG THÁI</th></tr></thead><tbody>{accounts.map((account) => <tr key={account.id}><td>{account.name}</td><td>{account.username}</td><td>{account.role === 'SINH_VIEN' ? 'Sinh viên' : account.role === 'GIANG_VIEN' ? 'Giảng viên' : 'Quản trị'}</td><td>{account.profile_code}</td><td>{account.department ?? '—'}</td><td>{account.status}</td></tr>)}</tbody></table></div></div>
+  function createDepartment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    void run(() => api<Department>('/admin/departments', token, 'POST', { name: new FormData(form).get('name') }), (result) => {
+      form.reset(); setSelectedDepartment(result.id); setMessage(`Đã tạo khoa ${result.name} (${result.code}).`)
+    })
+  }
+  function createClass(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    void run(() => api<ClassItem>('/admin/classes', token, 'POST', { departmentId: selectedDepartment }), (result) => {
+      setClasses((current) => [...current, result]); setMessage(`Đã tạo lớp ${result.code}.`)
+    })
+  }
+  function createAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const payload = Object.fromEntries(new FormData(form).entries())
+    void run(() => api<Credentials>('/admin/accounts', token, 'POST', { ...payload, role }), (result) => {
+      setCredentials(result); form.reset(); setMessage('Đã cấp tài khoản. Lưu thông tin đăng nhập bên dưới trước khi đóng.'); setSelectedDepartment('')
+    })
+  }
+  function changeStatus(account: Account) {
+    const status = account.status === 'HOAT_DONG' ? 'KHOA' : 'HOAT_DONG'
+    void run(() => api(`/admin/accounts/${account.id}/status`, token, 'PATCH', { status }), () => setMessage(`Đã ${status === 'KHOA' ? 'khóa' : 'mở khóa'} tài khoản ${account.username}.`))
+  }
+  function resetPassword(account: Account) {
+    if (!window.confirm(`Đặt lại mật khẩu tài khoản ${account.username}? Người dùng sẽ cần đăng nhập và đổi mật khẩu mới.`)) return
+    void run(() => api<Credentials>(`/admin/accounts/${account.id}/reset-password`, token, 'POST', {}), (result) => { setCredentials(result); setMessage('Đã cấp mật khẩu tạm mới.') })
+  }
+  const visible = accounts.filter((account) => `${account.name} ${account.username} ${account.department ?? ''}`.toLocaleLowerCase('vi').includes(query.toLocaleLowerCase('vi')))
+  return <section className="account-management" id={mode === 'organization' ? 'departments' : 'accounts'}>
+    <div className="card-heading"><div><h2>{mode === 'organization' ? 'Khoa và lớp' : 'Tài khoản'}</h2><p>{mode === 'organization' ? 'Tạo khoa, chọn khoa để xem và thêm lớp.' : 'Cấp tài khoản, khóa truy cập và đặt lại mật khẩu.'}</p></div><button className="outline-button" disabled={busy} onClick={() => void load().then(() => setError('')).catch((reason: Error) => setError(reason.message))}>Làm mới</button></div>
+    {error && <p className="account-message" role="alert">{error}</p>}{message && <p className="account-message" role="status">{message}</p>}
+    {credentials && <div className="credential-card" role="status"><strong>Thông tin đăng nhập mới</strong><p>Tên đăng nhập: <b>{credentials.username}</b></p><p>Mật khẩu tạm: <code>{credentials.temporaryPassword}</code></p><p>Lưu và gửi riêng cho người dùng. Mật khẩu chỉ xuất hiện lần này.</p><button className="outline-button" onClick={() => setCredentials(null)}>Đã lưu, ẩn thông tin</button></div>}
+    {mode === 'organization' ? <>
+      <form className="department-form" onSubmit={createDepartment}><label>Tên khoa<input name="name" placeholder="Ví dụ: Công nghệ thông tin" maxLength={160} required/></label><button className="dark-button" disabled={busy}>Thêm khoa</button></form>
+      <form className="department-form" onSubmit={createClass}><label>Khoa<select aria-label="Khoa để quản lý lớp" value={selectedDepartment} onChange={(event) => setSelectedDepartment(event.target.value)} required><option value="">Chọn khoa</option>{departments.map((department) => <option value={department.id} key={department.id}>{department.name} ({department.code})</option>)}</select></label><button className="dark-button" disabled={busy || !selectedDepartment}>Thêm lớp tiếp theo</button></form>
+      <div className="table-wrap"><table><thead><tr><th>{selectedDepartment ? 'Mã lớp' : 'Mã khoa'}</th><th>Tên</th></tr></thead><tbody>{(selectedDepartment ? classes : departments).map((item) => <tr key={item.id}><td>{item.code}</td><td>{item.name}</td></tr>)}{!(selectedDepartment ? classes : departments).length && <tr><td colSpan={2} className="empty-state">{selectedDepartment ? 'Khoa chưa có lớp.' : 'Chưa có khoa.'}</td></tr>}</tbody></table></div>
+    </> : <>
+      {!departments.length && <p className="account-message">Tạo khoa và lớp ở mục “Khoa và lớp” trước khi cấp tài khoản.</p>}
+      <details className="form-disclosure" open><summary>Cấp tài khoản mới</summary><form className="account-form" onSubmit={createAccount}>
+        <label>Vai trò<select value={role} onChange={(event) => setRole(event.target.value)}><option value="SINH_VIEN">Sinh viên</option><option value="GIANG_VIEN">Giảng viên</option></select></label>
+        <label>Họ và tên<input name="name" required maxLength={160}/></label>
+        <label>Khoa<select name="departmentId" value={selectedDepartment} onChange={(event) => setSelectedDepartment(event.target.value)} required disabled={!departments.length}><option value="">Chọn khoa</option>{departments.map((department) => <option value={department.id} key={department.id}>{department.name}</option>)}</select></label>
+        {role === 'SINH_VIEN' ? <label>Lớp<select name="classId" key={selectedDepartment} required disabled={!classes.length}><option value="">{classes.length ? 'Chọn lớp' : 'Chọn khoa có lớp'}</option>{classes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label> : <><label>Học hàm<input name="academicTitle"/></label><label>Học vị<input name="degree"/></label><label>Chuyên môn<input name="specialization"/></label></>}
+        <label>Số điện thoại<input name="phone" type="tel" maxLength={30}/></label><button className="dark-button" disabled={busy || !departments.length || (role === 'SINH_VIEN' && !classes.length)}>{busy ? 'Đang lưu…' : 'Cấp tài khoản'}</button>
+      </form></details>
+      <div className="filter-bar"><input aria-label="Tìm tài khoản" placeholder="Tìm họ tên, mã tài khoản hoặc khoa" value={query} onChange={(event) => setQuery(event.target.value)}/><span className="muted">{visible.length} tài khoản</span></div>
+      <div className="table-wrap"><table><thead><tr><th>Họ tên</th><th>Tên đăng nhập</th><th>Vai trò</th><th>Khoa</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{visible.map((account) => <tr key={account.id}><td>{account.name}</td><td>{account.username}</td><td>{roleName(account.role)}</td><td>{account.department ?? '—'}</td><td><span className="status-pill">{account.status === 'HOAT_DONG' ? 'Hoạt động' : 'Đã khóa'}</span></td><td>{account.role !== 'QUAN_TRI' && <div className="row-actions"><button className="outline-button" disabled={busy} onClick={() => changeStatus(account)}>{account.status === 'HOAT_DONG' ? 'Khóa' : 'Mở khóa'}</button><button className="outline-button" disabled={busy} onClick={() => resetPassword(account)}>Đặt lại mật khẩu</button></div>}</td></tr>)}{!visible.length && <tr><td colSpan={6} className="empty-state">Không có tài khoản phù hợp.</td></tr>}</tbody></table></div>
+    </>}
   </section>
 }

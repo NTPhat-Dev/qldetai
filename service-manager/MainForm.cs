@@ -1,475 +1,413 @@
-﻿using System.Diagnostics;
-using System.Drawing.Drawing2D;
+using System.Diagnostics;
 
 namespace Qldetai.ServiceManager;
 
 internal sealed class MainForm : Form
 {
-    private static readonly Color Ink = Color.FromArgb(238, 238, 238);
-    private static readonly Color Paper = Color.FromArgb(5, 8, 12);
-    private static readonly Color SoftPaper = Color.FromArgb(12, 18, 24);
-    private static readonly Color White = Color.FromArgb(8, 13, 18);
-    private static readonly Color Muted = Color.FromArgb(170, 170, 170);
-    private static readonly Color Rule = Color.FromArgb(65, 65, 65);
-    private static readonly Color Healthy = Color.FromArgb(245, 245, 245);
-    private static readonly Color Fault = Color.FromArgb(135, 135, 135);
-
-    private readonly ServiceCoordinator _coordinator;
+    private static readonly Color Ink = Color.FromArgb(239, 246, 247);
+    private static readonly Color Paper = Color.FromArgb(7, 12, 15);
+    private static readonly Color Surface = Color.FromArgb(18, 27, 31);
+    private static readonly Color Muted = Color.FromArgb(158, 177, 183);
+    private static readonly Color Rule = Color.FromArgb(51, 69, 74);
+    private static readonly Color Cyan = Color.FromArgb(70, 218, 227);
+    private static readonly Color Green = Color.FromArgb(79, 219, 141);
+    private static readonly Color Red = Color.FromArgb(255, 108, 119);
+    private readonly ServiceCoordinator _coordinator = new();
+    private readonly CancellationTokenSource _lifetime = new();
     private readonly Label _dockerState = new();
     private readonly Label _setupTitle = new();
     private readonly Label _setupMessage = new();
+    private readonly Label _serviceSummary = new();
     private readonly ProgressBar _progress = new();
-    private readonly Label _log = new();
-    private readonly FlowLayoutPanel _serviceCards = new();
+    private readonly TextBox _log = new();
     private readonly Button _retryButton = new();
     private readonly Button _startAllButton = new();
+    private readonly Button _stopAllButton = new();
     private readonly Button _rebuildButton = new();
-    private readonly Button _openWebButton = new();
-    private readonly Button _openAdminButton = new();
-    private readonly System.Windows.Forms.Timer _refreshTimer = new() { Interval = 3000 };
-    private readonly Dictionary<string, (Label Status, Button Toggle)> _serviceControls = new(StringComparer.Ordinal);
+    private readonly Button _refreshButton = new();
+    private readonly System.Windows.Forms.Timer _refreshTimer = new() { Interval = 5000 };
+    private readonly Dictionary<string, (Label Status, Button Toggle, Button Logs)> _serviceControls = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ServiceStatus> _states = new(StringComparer.Ordinal);
+    private readonly ToolTip _tips = new();
     private bool _busy;
+    private bool _refreshing;
     private bool _dockerAvailable;
-    private string? _lastError;
+    private string? _lastRefreshError;
 
-    public MainForm()
+    public MainForm(bool startOnShow = true)
     {
-        _coordinator = new ServiceCoordinator();
         Text = "DEMO · Trình quản lý dịch vụ";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(880, 620);
-        Size = new Size(1000, 720);
+        MinimumSize = new Size(860, 680);
+        Size = new Size(1020, 850);
         BackColor = Paper;
         ForeColor = Ink;
-        Font = new Font("Arial", 10F, FontStyle.Regular, GraphicsUnit.Point);
+        Font = new Font("Arial", 10F);
+        AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
         DoubleBuffered = true;
-
         BuildInterface();
+        AppendLog("Cấu hình và dữ liệu hiện có được giữ trong thư mục dự án / Docker volume.");
         Shown += async (_, _) =>
         {
-            WindowState = FormWindowState.Normal;
-            Activate();
-            BringToFront();
-            await RunStackAsync(forceBuild: false);
-            Activate();
+            if (!startOnShow) return;
+            await RunStackAsync(false);
+            if (!IsDisposed) _refreshTimer.Start();
         };
         _refreshTimer.Tick += async (_, _) => await RefreshServicesAsync();
-        _refreshTimer.Start();
-        FormClosed += (_, _) => _refreshTimer.Stop();
+        FormClosing += (_, _) => { _refreshTimer.Stop(); _lifetime.Cancel(); };
+        FormClosed += (_, _) => { _refreshTimer.Dispose(); _tips.Dispose(); };
     }
 
     private void BuildInterface()
     {
-        var page = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 6,
-            Padding = new Padding(22, 16, 22, 18),
-            BackColor = Paper,
-        };
-        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
-        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));
-        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        var page = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(24), BackColor = Paper };
+        page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
+        page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         page.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
+        page.RowStyles.Add(new RowStyle(SizeType.Absolute, 25));
+        page.Controls.Add(BuildHeader(), 0, 0);
+        page.Controls.Add(BuildSummary(), 0, 1);
+        page.Controls.Add(BuildActions(), 0, 2);
+        page.Controls.Add(BuildServices(), 0, 3);
+        page.Controls.Add(BuildLog(), 0, 4);
+        page.Controls.Add(Label("Môi trường trên máy này  ·  Dữ liệu được lưu riêng theo từng dịch vụ", 8.5F, false, Muted), 0, 5);
         Controls.Add(page);
-
-        page.Controls.Add(BuildMasthead(), 0, 0);
-        page.Controls.Add(BuildIntro(), 0, 1);
-        page.Controls.Add(BuildSetupPanel(), 0, 2);
-        page.Controls.Add(BuildServiceHeading(), 0, 3);
-        page.Controls.Add(BuildServiceCards(), 0, 4);
-        page.Controls.Add(BuildFooter(), 0, 5);
     }
 
-    private Control BuildMasthead()
+    private Control BuildHeader()
     {
-        var bar = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 0, 6), BackColor = Paper };
-        var mark = new Label
-        {
-            Text = "DEMO  /  QUẢN LÝ DỊCH VỤ",
-            Dock = DockStyle.Left,
-            AutoSize = true,
-            TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Ink,
-            Font = new Font("Arial", 9.5F, FontStyle.Bold),
-        };
-        _dockerState.Text = "●  ĐANG KIỂM TRA DOCKER";
-        _dockerState.Dock = DockStyle.Right;
-        _dockerState.AutoSize = true;
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        var text = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+        text.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+        text.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        text.Controls.Add(Label("DEMO", 9, true, Muted));
+        text.Controls.Add(Label("Trình quản lý dịch vụ", 23, true));
+        _dockerState.Text = "●  Chưa kiểm tra Docker";
+        _dockerState.Dock = DockStyle.Fill;
         _dockerState.TextAlign = ContentAlignment.MiddleRight;
-        _dockerState.ForeColor = Ink;
-        _dockerState.Font = new Font("Arial", 9F, FontStyle.Regular);
-        bar.Controls.Add(_dockerState);
-        bar.Controls.Add(mark);
-        return bar;
+        _dockerState.ForeColor = Muted;
+        header.Controls.Add(text, 0, 0);
+        header.Controls.Add(_dockerState, 1, 0);
+        return header;
     }
 
-    private Control BuildIntro()
+    private Control BuildSummary()
     {
-        var intro = new Panel { Dock = DockStyle.Fill, BackColor = Paper };
-        var title = new Label
-        {
-            Text = "QUẢN LÝ DỊCH VỤ",
-            Location = new Point(0, 1),
-            Size = new Size(360, 28),
-            Font = new Font("Arial", 17F, FontStyle.Bold),
-            ForeColor = Color.White,
-        };
-        var description = new Label
-        {
-            Text = "Khởi tạo môi trường · Theo dõi và điều khiển SOA",
-            Location = new Point(2, 30),
-            Size = new Size(540, 18),
-            ForeColor = Muted,
-            Font = new Font("Arial", 9F),
-        };
-        intro.Controls.Add(title);
-        intro.Controls.Add(description);
-        return intro;
-    }
-
-    private Control BuildSetupPanel()
-    {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = SoftPaper,
-            Padding = new Padding(14),
-        };
-        panel.Paint += (_, e) => DrawRoundedBorder(e.Graphics, panel.ClientRectangle, Rule, 14);
-
-        var eyebrow = Eyebrow("00   /   KHỞI TẠO MÔI TRƯỜNG");
-        eyebrow.Location = new Point(16, 11);
-        eyebrow.Size = new Size(480, 18);
-        _setupTitle.Text = "Đang chuẩn bị môi trường…";
-        _setupTitle.Location = new Point(16, 34);
-        _setupTitle.Size = new Size(560, 30);
-        _setupTitle.Font = new Font("Arial", 16F, FontStyle.Bold);
-        _setupTitle.ForeColor = Ink;
-        _setupMessage.Text = "Khởi tạo cấu hình và bật toàn bộ dịch vụ.";
-        _setupMessage.Location = new Point(17, 68);
-        _setupMessage.Size = new Size(560, 36);
-        _setupMessage.ForeColor = Muted;
-        _setupMessage.Font = new Font("Arial", 9.5F);
-
-        _progress.Location = new Point(17, 108);
-        _progress.Size = new Size(500, 6);
-        _progress.Style = ProgressBarStyle.Marquee;
-        _progress.MarqueeAnimationSpeed = 24;
-
-        ConfigureButton(_retryButton, "Thử lại", isPrimary: true);
-        _retryButton.Size = new Size(112, 34);
-        _retryButton.Location = new Point(735, 22);
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Surface, Padding = new Padding(16, 10, 16, 12), ColumnCount = 2, RowCount = 3, Margin = new Padding(0, 6, 0, 8) };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 98));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 5));
+        _setupTitle.Text = "Chuẩn bị môi trường";
+        _setupTitle.Font = new Font("Arial", 15, FontStyle.Bold);
+        _setupTitle.ForeColor = Color.White;
+        _setupTitle.Dock = DockStyle.Fill;
+        _setupTitle.AutoEllipsis = true;
+        _setupMessage.Text = "Khởi tạo cấu hình, kiểm tra Docker và bật các dịch vụ.";
+        _setupMessage.ForeColor = Color.FromArgb(204, 204, 204);
+        _setupMessage.Dock = DockStyle.Fill;
+        _setupMessage.AutoEllipsis = true;
+        _setupMessage.Font = new Font("Arial", 9);
+        _progress.Dock = DockStyle.Fill;
+        _progress.Style = ProgressBarStyle.Continuous;
+        _progress.Margin = new Padding(0);
+        ConfigureButton(_retryButton, "Thử lại", true);
         _retryButton.Visible = false;
-        _retryButton.Click += async (_, _) => await RunStackAsync(forceBuild: false);
-
-        ConfigureButton(_startAllButton, "Bật toàn bộ", isPrimary: true);
-        _startAllButton.Size = new Size(125, 34);
-        _startAllButton.Location = new Point(595, 22);
-        _startAllButton.Click += async (_, _) => await RunStackAsync(forceBuild: false);
-
-        ConfigureButton(_rebuildButton, "Dựng lại", isPrimary: false);
-        _rebuildButton.Size = new Size(112, 34);
-        _rebuildButton.Location = new Point(735, 66);
-        _rebuildButton.Click += async (_, _) => await RunStackAsync(forceBuild: true);
-
-        panel.Controls.AddRange([eyebrow, _setupTitle, _setupMessage, _progress, _retryButton, _startAllButton, _rebuildButton]);
+        _retryButton.Click += async (_, _) => await RunStackAsync(false);
+        panel.Controls.Add(_setupTitle, 0, 0);
+        panel.Controls.Add(_setupMessage, 0, 1);
+        panel.Controls.Add(_progress, 0, 2);
+        panel.Controls.Add(_retryButton, 1, 0);
+        panel.SetRowSpan(_retryButton, 2);
+        _retryButton.Anchor = AnchorStyles.Right;
         return panel;
     }
 
-    private Control BuildServiceHeading()
+    private Control BuildActions()
     {
-        var row = new Panel { Dock = DockStyle.Fill, BackColor = Paper };
-        var title = new Label
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Margin = new Padding(0, 0, 0, 10), Padding = new Padding(0, 4, 0, 4) };
+        ConfigureButton(_startAllButton, "Bật toàn bộ", true);
+        ConfigureButton(_stopAllButton, "Dừng toàn bộ", false);
+        ConfigureButton(_rebuildButton, "Dựng lại image", false);
+        ConfigureButton(_refreshButton, "Làm mới", false);
+        var openWeb = new Button();
+        var openAdmin = new Button();
+        ConfigureButton(openWeb, "Mở ứng dụng", false);
+        ConfigureButton(openAdmin, "Mở quản trị", false);
+        _startAllButton.Click += async (_, _) => await RunStackAsync(false);
+        _stopAllButton.Click += async (_, _) => await ExecuteAsync("Đang dừng dịch vụ…", async () => { await _coordinator.StopAllAsync(_lifetime.Token); SetSummary("Đã dừng toàn bộ", "Các database và dữ liệu trong volume được giữ nguyên."); });
+        _rebuildButton.Click += async (_, _) => await RunStackAsync(true);
+        _refreshButton.Click += async (_, _) => await RefreshServicesAsync();
+        openWeb.Click += (_, _) => OpenLocalPage($"http://localhost:{_coordinator.WebHostPort}");
+        openAdmin.Click += (_, _) => OpenLocalPage($"http://localhost:{_coordinator.WebHostPort}/admin");
+        _tips.SetToolTip(_rebuildButton, "Dựng image không dùng cache, sau đó bật lại các dịch vụ. Giữ nguyên dữ liệu.");
+        actions.Controls.AddRange([_startAllButton, _stopAllButton, _rebuildButton, _refreshButton, openWeb, openAdmin]);
+        return actions;
+    }
+
+    private Control BuildServices()
+    {
+        var section = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = new Padding(0, 0, 0, 10) };
+        section.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        section.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        section.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _serviceSummary.Text = "DỊCH VỤ  ·  Chưa kiểm tra";
+        _serviceSummary.Font = new Font("Arial", 9, FontStyle.Bold);
+        _serviceSummary.Dock = DockStyle.Fill;
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Surface };
+        var rows = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, Padding = new Padding(10, 0, 10, 0), BackColor = Surface };
+        rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        foreach (var service in new[]
         {
-            Text = "DỊCH VỤ",
-            Location = new Point(0, 10),
-            Size = new Size(200, 24),
-            Font = new Font("Arial", 11F, FontStyle.Bold),
-            ForeColor = Ink,
+            ("identity-db", "Database định danh", "Nội bộ · 5432"),
+            ("academic-db", "Database học vụ", "Nội bộ · 5432"),
+            ("registration-db", "Database đăng ký", "Nội bộ · 5432"),
+            ("identity-service", "Dịch vụ tài khoản", "Nội bộ · 3101"),
+            ("academic-service", "Dịch vụ học vụ", "Nội bộ · 3102"),
+            ("registration-service", "Dịch vụ đăng ký", "Nội bộ · 3103"),
+            ("api-gateway", "Cổng API", "Nội bộ · 3100"),
+            ("web", "Giao diện web", $"Cổng {_coordinator.WebHostPort}")
+        })
+        {
+            rows.RowStyles.Add(new RowStyle(SizeType.Absolute, 49));
+            rows.Controls.Add(CreateServiceRow(service.Item1, service.Item2, service.Item3));
+        }
+        scroll.Controls.Add(rows);
+        section.Controls.Add(_serviceSummary, 0, 0);
+        section.Controls.Add(scroll, 0, 1);
+        return section;
+    }
+
+    private Control CreateServiceRow(string id, string name, string port)
+    {
+        var row = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 1, Margin = Padding.Empty, Padding = new Padding(3, 5, 3, 5), BackColor = Surface };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 24));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
+        row.Paint += (_, e) => { using var pen = new Pen(Rule); e.Graphics.DrawLine(pen, 0, row.Height - 1, row.Width, row.Height - 1); };
+        var title = Label(name, 10, true);
+        var status = Label("○ Chưa kiểm tra", 9, false, Muted);
+        var portLabel = Label(port, 8.5F, false, Muted);
+        var toggle = new Button();
+        var logs = new Button();
+        ConfigureButton(toggle, "Bật", false);
+        ConfigureButton(logs, "Nhật ký", false);
+        toggle.Dock = logs.Dock = DockStyle.Fill;
+        toggle.Margin = logs.Margin = new Padding(4, 1, 0, 1);
+        toggle.AutoSize = logs.AutoSize = false;
+        toggle.Enabled = logs.Enabled = false;
+        toggle.Click += async (_, _) =>
+        {
+            var start = !_states.TryGetValue(id, out var state) || !state.Running;
+            await ExecuteAsync(start ? $"Đang bật {name}…" : $"Đang dừng {name}…", async () =>
+            {
+                await _coordinator.SetServiceAsync(id, start, _lifetime.Token);
+                SetSummary("Đã gửi thao tác", $"{name}: {(start ? "đã bật" : "đã dừng")}. Trạng thái được cập nhật bên dưới.");
+            });
         };
-        ConfigureButton(_openWebButton, "MỞ ỨNG DỤNG", false);
-        _openWebButton.Size = new Size(132, 30);
-        _openWebButton.Location = new Point(676, 5);
-        _openWebButton.Click += (_, _) => OpenLocalPage($"http://localhost:{_coordinator.WebHostPort}");
-        ConfigureButton(_openAdminButton, "MỞ QUẢN TRỊ", false);
-        _openAdminButton.Size = new Size(132, 30);
-        _openAdminButton.Location = new Point(818, 5);
-        _openAdminButton.Click += (_, _) => OpenLocalPage($"http://localhost:{_coordinator.WebHostPort}/admin");
-        row.Controls.AddRange([title, _openWebButton, _openAdminButton]);
+        logs.Click += async (_, _) => await ShowServiceLogsAsync(id, name);
+        row.Controls.Add(title, 0, 0);
+        row.Controls.Add(status, 1, 0);
+        row.Controls.Add(portLabel, 2, 0);
+        row.Controls.Add(toggle, 3, 0);
+        row.Controls.Add(logs, 4, 0);
+        _serviceControls[id] = (status, toggle, logs);
         return row;
     }
 
-    private Control BuildServiceCards()
+    private Control BuildLog()
     {
-        _serviceCards.Dock = DockStyle.Fill;
-        _serviceCards.FlowDirection = FlowDirection.LeftToRight;
-        _serviceCards.WrapContents = true;
-        _serviceCards.AutoScroll = true;
-        _serviceCards.Padding = new Padding(0, 2, 0, 4);
-        _serviceCards.BackColor = Paper;
-        foreach (var service in new[]
-        {
-            new ServiceStatus("identity-db", "Cơ sở dữ liệu định danh", "NỘI BỘ · 5432", false, "stopped", 0),
-            new ServiceStatus("academic-db", "Cơ sở dữ liệu học vụ", "NỘI BỘ · 5432", false, "stopped", 0),
-            new ServiceStatus("registration-db", "Cơ sở dữ liệu đăng ký", "NỘI BỘ · 5432", false, "stopped", 0),
-            new ServiceStatus("identity-service", "Dịch vụ tài khoản", "NỘI BỘ · 3101", false, "stopped", 0),
-            new ServiceStatus("academic-service", "Dịch vụ học vụ", "NỘI BỘ · 3102", false, "stopped", 0),
-            new ServiceStatus("registration-service", "Dịch vụ đăng ký", "NỘI BỘ · 3103", false, "stopped", 0),
-            new ServiceStatus("api-gateway", "Cổng API", "NỘI BỘ · 3100", false, "stopped", 0),
-            new ServiceStatus("web", "Giao diện web", $"{_coordinator.WebHostPort} → 80", false, "stopped", 0),
-        }) _serviceCards.Controls.Add(CreateServiceCard(service));
-        return _serviceCards;
-    }
-
-    private Control CreateServiceCard(ServiceStatus service)
-    {
-        var card = new Panel
-        {
-            Width = 440,
-            Height = 78,
-            Margin = new Padding(0, 0, 12, 9),
-            Padding = new Padding(0),
-            BackColor = SoftPaper,
-        };
-        card.Paint += (_, e) => DrawRoundedBorder(e.Graphics, card.ClientRectangle, Rule, 12);
-
-        var role = Eyebrow(service.Id switch
-        {
-            "identity-db" or "academic-db" or "registration-db" => "CƠ SỞ DỮ LIỆU",
-            "identity-service" or "academic-service" or "registration-service" => "DỊCH VỤ API",
-            "api-gateway" => "CỔNG KẾT NỐI",
-            _ => "GIAO DIỆN",
-        });
-        role.Location = new Point(14, 43);
-        role.Size = new Size(145, 16);
-        role.Font = new Font("Arial", 7.5F, FontStyle.Bold);
-        var status = new Label
-        {
-            Text = "●  ĐANG TẮT",
-            Location = new Point(265, 12),
-            Size = new Size(160, 17),
-            ForeColor = Fault,
-            Font = new Font("Arial", 8F, FontStyle.Bold),
-        };
-        var title = new Label
-        {
-            Text = service.Name,
-            Location = new Point(14, 9),
-            Size = new Size(245, 26),
-            Font = new Font("Arial", 12F, FontStyle.Bold),
-            ForeColor = Color.White,
-        };
-        var port = new Label
-        {
-            Text = $"CỔNG  {service.Port}",
-            Location = new Point(164, 43),
-            Size = new Size(140, 16),
-            ForeColor = Muted,
-            Font = new Font("Arial", 7.5F),
-        };
-        var toggle = new Button
-        {
-            Text = "Bật dịch vụ",
-            Location = new Point(312, 37),
-            Size = new Size(112, 28),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Paper,
-            ForeColor = Ink,
-            Cursor = Cursors.Hand,
-            Font = new Font("Arial", 8.5F, FontStyle.Bold),
-            Tag = service.Id,
-        };
-        toggle.FlatAppearance.BorderColor = Rule;
-        toggle.FlatAppearance.MouseOverBackColor = Color.FromArgb(15, 34, 42);
-        toggle.Click += async (_, _) => await ToggleServiceAsync((string)toggle.Tag!, !toggle.Text.StartsWith("Tắt", StringComparison.Ordinal));
-        card.Controls.AddRange([role, status, title, port, toggle]);
-        _serviceControls[service.Id] = (status, toggle);
-        return card;
-    }
-
-    private Control BuildFooter()
-    {
-        var footer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 12, 0, 0) };
-        var note = new Label
-        {
-            Text = "CHỈ QUẢN LÝ DOCKER TRÊN MÁY NÀY     ·     DỮ LIỆU DATABASE ĐƯỢC GIỮ TRONG VOLUME",
-            Dock = DockStyle.Left,
-            AutoSize = true,
-            ForeColor = Muted,
-            Font = new Font("Arial", 8F),
-        };
-        _log.Text = "Sẵn sàng khởi chạy.";
-        _log.Dock = DockStyle.Right;
-        _log.AutoSize = true;
-        _log.TextAlign = ContentAlignment.MiddleRight;
+        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Margin = Padding.Empty };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        panel.Controls.Add(Label("NHẬT KÝ THAO TÁC", 9, true), 0, 0);
+        var copy = new Button();
+        ConfigureButton(copy, "Sao chép", false);
+        copy.Click += (_, _) => CopyText(_log.Text);
+        panel.Controls.Add(copy, 1, 0);
+        _log.Dock = DockStyle.Fill;
+        _log.Multiline = true;
+        _log.ReadOnly = true;
+        _log.ScrollBars = ScrollBars.Vertical;
+        _log.BackColor = Surface;
         _log.ForeColor = Muted;
-        _log.Font = new Font("Arial", 8.5F);
-        footer.Controls.Add(_log);
-        footer.Controls.Add(note);
-        return footer;
+        _log.BorderStyle = BorderStyle.FixedSingle;
+        _log.Font = new Font("Arial", 9);
+        panel.Controls.Add(_log, 0, 1);
+        panel.SetColumnSpan(_log, 2);
+        return panel;
     }
 
-    private async Task RunStackAsync(bool forceBuild)
+    private async Task RunStackAsync(bool rebuild)
     {
-        if (_busy) return;
+        await ExecuteAsync(rebuild ? "Đang dựng lại image…" : "Đang chuẩn bị môi trường…", async () =>
+        {
+            var progress = new Progress<string>(message => { if (!IsDisposed) { _setupMessage.Text = message; AppendLog(message); } });
+            var result = await _coordinator.StartAllAsync(rebuild, progress, _lifetime.Token);
+            SetSummary("Môi trường đã sẵn sàng", result.AdminMessage);
+            _progress.Value = 100;
+            if (result.Credentials is not null && !IsDisposed)
+                using (var dialog = new CredentialsForm(result.Credentials)) dialog.ShowDialog(this);
+        });
+    }
+
+    private async Task ExecuteAsync(string title, Func<Task> action)
+    {
+        if (_busy || IsDisposed) return;
         SetBusy(true);
-        _lastError = null;
         _retryButton.Visible = false;
-        _setupTitle.Text = forceBuild ? "Đang dựng lại toàn bộ…" : "Đang khởi động dịch vụ…";
-        _setupTitle.ForeColor = Ink;
-        _setupMessage.Text = "Tạo cấu hình, kiểm tra Docker và chờ các dịch vụ khỏe.";
-        _setupMessage.ForeColor = Muted;
+        SetSummary(title, "Đang thực hiện. Chi tiết được ghi vào nhật ký.");
         _progress.Style = ProgressBarStyle.Marquee;
         _progress.MarqueeAnimationSpeed = 24;
-        _log.Text = forceBuild ? "Đang yêu cầu build lại Docker image." : "Đang bật môi trường phát triển.";
-        var progress = new Progress<string>(message => _setupMessage.Text = message);
-        try
-        {
-            var result = await _coordinator.StartAllAsync(forceBuild, progress, CancellationToken.None);
-            _setupTitle.Text = "Môi trường đã sẵn sàng";
-            _setupTitle.ForeColor = Healthy;
-            _setupMessage.Text = result.AdminMessage;
-            _log.Text = result.BuiltImages ? "Đã dựng image và khởi chạy toàn bộ dịch vụ." : "Đã bật lại toàn bộ dịch vụ hiện có.";
-            _progress.Style = ProgressBarStyle.Continuous;
-            _progress.MarqueeAnimationSpeed = 0;
-            _progress.Value = 100;
-            if (result.Credentials is not null) using (var dialog = new CredentialsForm(result.Credentials)) dialog.ShowDialog(this);
-        }
+        try { await action(); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception error)
         {
-            _lastError = error.Message;
-            _setupTitle.Text = "Chưa khởi tạo xong";
-            _setupTitle.ForeColor = Fault;
-            _setupMessage.Text = error.Message;
-            _setupMessage.ForeColor = Fault;
-            _log.Text = "Cần xử lý trạng thái được báo ở trên.";
+            SetSummary("Cần kiểm tra", ShortMessage(error.Message));
+            AppendLog(error.Message);
             _retryButton.Visible = true;
-            _progress.Style = ProgressBarStyle.Continuous;
-            _progress.MarqueeAnimationSpeed = 0;
-            _progress.Value = 0;
         }
         finally
         {
-            SetBusy(false);
-            await RefreshServicesAsync();
-        }
-    }
-
-    private async Task ToggleServiceAsync(string id, bool start)
-    {
-        if (_busy) return;
-        SetBusy(true);
-        try
-        {
-            await _coordinator.SetServiceAsync(id, start, CancellationToken.None);
-            _setupTitle.Text = start ? "Đang bật dịch vụ…" : "Đang dừng dịch vụ…";
-            _setupTitle.ForeColor = Ink;
-            _setupMessage.Text = $"{id}: thao tác đã gửi tới Docker Compose.";
-        }
-        catch (Exception error)
-        {
-            _setupTitle.Text = "Không thao tác được dịch vụ";
-            _setupTitle.ForeColor = Fault;
-            _setupMessage.Text = error.Message;
-        }
-        finally
-        {
-            SetBusy(false);
-            await RefreshServicesAsync();
+            if (!IsDisposed && !_lifetime.IsCancellationRequested)
+            {
+                _progress.Style = ProgressBarStyle.Continuous;
+                _progress.MarqueeAnimationSpeed = 0;
+                SetBusy(false);
+                await RefreshServicesAsync();
+            }
         }
     }
 
     private async Task RefreshServicesAsync()
     {
-        if (IsDisposed || Disposing || _busy) return;
-        _dockerAvailable = await _coordinator.IsDockerAvailableAsync(CancellationToken.None);
-        _dockerState.Text = _dockerAvailable ? "●  DOCKER ĐÃ KẾT NỐI" : "●  DOCKER CHƯA SẴN SÀNG";
-        _dockerState.ForeColor = _dockerAvailable ? Healthy : Fault;
-        var statuses = await _coordinator.GetServiceStatusesAsync(CancellationToken.None);
-        foreach (var service in statuses)
+        if (IsDisposed || _busy || _refreshing || _lifetime.IsCancellationRequested) return;
+        _refreshing = true;
+        try
         {
-            if (!_serviceControls.TryGetValue(service.Id, out var controls)) continue;
-            controls.Status.Text = service.Running
-                ? service.External ? "●  ĐANG CHẠY · LOCAL" : $"●  {HealthName(service.Health)}"
-                : "●  ĐANG TẮT";
-            controls.Status.ForeColor = !service.Running || service.Health.Equals("unhealthy", StringComparison.OrdinalIgnoreCase)
-                ? Fault
-                : service.External || service.Health.Equals("healthy", StringComparison.OrdinalIgnoreCase) ? Healthy : Ink;
-            controls.Toggle.Text = service.Running ? "Tắt dịch vụ" : "Bật dịch vụ";
-            controls.Toggle.Enabled = _dockerAvailable && !_busy && !service.External;
+            _dockerAvailable = await _coordinator.IsDockerAvailableAsync(_lifetime.Token);
+            if (!_dockerAvailable) throw new InvalidOperationException("Docker chưa sẵn sàng. Chọn Bật toàn bộ để mở Docker và khôi phục môi trường.");
+            var statuses = await _coordinator.GetServiceStatusesAsync(_lifetime.Token);
+            if (IsDisposed) return;
+            _dockerState.Text = "●  Docker đã kết nối";
+            _dockerState.ForeColor = Green;
+            _lastRefreshError = null;
+            foreach (var service in statuses)
+            {
+                _states[service.Id] = service;
+                var controls = _serviceControls[service.Id];
+                controls.Status.Text = service.External ? "● Chạy ngoài Docker" : !service.Running ? "○ Đã dừng" : service.Health.ToLowerInvariant() switch { "healthy" => "● Đang chạy", "unhealthy" => "! Cần kiểm tra", _ => "◌ Khởi động" };
+                controls.Status.ForeColor = service.External ? Cyan : !service.Running ? Red : service.Health.ToLowerInvariant() switch { "healthy" => Green, "unhealthy" => Red, _ => Cyan };
+                controls.Toggle.Text = service.Running ? "Dừng" : "Bật";
+                controls.Toggle.Enabled = !_busy && !service.External;
+                controls.Logs.Enabled = !_busy && !service.External;
+                _tips.SetToolTip(controls.Status, $"{service.Id}: {service.Health}");
+            }
+            var ready = statuses.Count(service => service.Running && (service.Health == "healthy" || service.External));
+            _serviceSummary.Text = $"DỊCH VỤ  ·  {ready}/{statuses.Count} sẵn sàng";
         }
-        _startAllButton.Enabled = _dockerAvailable && !_busy;
-        _rebuildButton.Enabled = _dockerAvailable && !_busy;
-        if (!_dockerAvailable && _lastError is null && _setupTitle.Text == "Môi trường đã sẵn sàng")
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception error)
         {
-            _setupTitle.Text = "Docker đang tạm gián đoạn";
-            _setupMessage.Text = "Dữ liệu vẫn nằm trong volume. Mở Docker Desktop để khôi phục dịch vụ.";
+            if (IsDisposed) return;
+            _dockerState.Text = _dockerAvailable ? "● Chưa đọc được trạng thái" : "○ Docker chưa kết nối";
+            _dockerState.ForeColor = Red;
+            _serviceSummary.Text = "DỊCH VỤ  ·  Chưa xác định trạng thái hiện tại";
+            foreach (var controls in _serviceControls.Values) { controls.Toggle.Enabled = false; controls.Logs.Enabled = false; }
+            if (_lastRefreshError != error.Message) { AppendLog(error.Message); _lastRefreshError = error.Message; }
         }
+        finally { _refreshing = false; if (!IsDisposed) UpdateActionState(); }
     }
 
-    private void SetBusy(bool busy)
+    private void SetBusy(bool value)
     {
-        _busy = busy;
-        _retryButton.Enabled = !busy;
-        _startAllButton.Enabled = !busy && _dockerAvailable;
-        _rebuildButton.Enabled = !busy && _dockerAvailable;
-        foreach (var controls in _serviceControls.Values) controls.Toggle.Enabled = !busy && _dockerAvailable;
+        _busy = value;
+        foreach (var item in _serviceControls) { item.Value.Toggle.Enabled = !value && _dockerAvailable && _states.TryGetValue(item.Key, out var state) && !state.External; item.Value.Logs.Enabled = !value && _dockerAvailable; }
+        UpdateActionState();
     }
 
-    private static string HealthName(string health) => health.ToLowerInvariant() switch
+    private void UpdateActionState()
     {
-        "healthy" => "ĐANG CHẠY · KHỎE",
-        "external" => "ĐANG CHẠY · LOCAL",
-        "unhealthy" => "CẦN KIỂM TRA",
-        _ => "ĐANG KHỞI ĐỘNG",
-    };
-
-    private static void DrawRoundedBorder(Graphics graphics, Rectangle bounds, Color color, int radius)
-    {
-        bounds.Width -= 1;
-        bounds.Height -= 1;
-        using var path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, radius, radius, 180, 90);
-        path.AddArc(bounds.Right - radius, bounds.Top, radius, radius, 270, 90);
-        path.AddArc(bounds.Right - radius, bounds.Bottom - radius, radius, radius, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - radius, radius, radius, 90, 90);
-        path.CloseFigure();
-        var smoothing = graphics.SmoothingMode;
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var pen = new Pen(color);
-        graphics.DrawPath(pen, path);
-        graphics.SmoothingMode = smoothing;
+        // Start also opens Docker, so it remains usable while Docker is offline.
+        _startAllButton.Enabled = _retryButton.Enabled = _rebuildButton.Enabled = !_busy;
+        _stopAllButton.Enabled = !_busy && _dockerAvailable;
+        _refreshButton.Enabled = !_busy && !_refreshing;
     }
 
-    private static Label Eyebrow(string text) => new()
+    private void SetSummary(string title, string message)
     {
-        Text = text,
-        ForeColor = Muted,
-        Font = new Font("Arial", 8F, FontStyle.Bold),
-        AutoEllipsis = true,
-    };
+        if (IsDisposed) return;
+        _setupTitle.Text = title;
+        _setupMessage.Text = message;
+        _setupTitle.ForeColor = title.Contains("kiểm tra", StringComparison.OrdinalIgnoreCase) || title.Contains("lỗi", StringComparison.OrdinalIgnoreCase) ? Red : Ink;
+        AppendLog($"{title} {message}");
+    }
 
-    private static void ConfigureButton(Button button, string text, bool isPrimary)
+    private void AppendLog(string message)
+    {
+        if (IsDisposed || _log.IsDisposed) return;
+        if (_log.TextLength > 40000) _log.Text = _log.Text[^20000..];
+        _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+    }
+
+    private async Task ShowServiceLogsAsync(string id, string name)
+    {
+        try
+        {
+            var logs = await _coordinator.GetServiceLogsAsync(id, _lifetime.Token);
+            if (IsDisposed) return;
+            using var dialog = new Form { Text = $"Nhật ký · {name}", StartPosition = FormStartPosition.CenterParent, Size = new Size(840, 500), MinimumSize = new Size(600, 360), Font = new Font("Arial", 9), BackColor = Paper };
+            var text = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Text = string.IsNullOrWhiteSpace(logs) ? "Chưa có nhật ký." : logs, BackColor = Surface, ForeColor = Ink };
+            var copy = new Button { Dock = DockStyle.Bottom, Height = 38 };
+            ConfigureButton(copy, "Sao chép nhật ký", false);
+            copy.Click += (_, _) => CopyText(text.Text);
+            dialog.Controls.Add(text);
+            dialog.Controls.Add(copy);
+            dialog.ShowDialog(this);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception error) { SetSummary("Chưa lấy được nhật ký", ShortMessage(error.Message)); AppendLog(error.Message); }
+    }
+
+    private static string ShortMessage(string value) => value.Length <= 190 ? value : value[..187] + "… Xem nhật ký bên dưới.";
+    private static Label Label(string text, float size, bool bold, Color? color = null) => new() { Text = text, Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, ForeColor = color ?? Ink, Font = new Font("Arial", size, bold ? FontStyle.Bold : FontStyle.Regular), Margin = new Padding(0, 0, 8, 0) };
+    private static void ConfigureButton(Button button, string text, bool primary)
     {
         button.Text = text;
+        button.AutoSize = true;
+        button.MinimumSize = new Size(76, 32);
+        button.Padding = new Padding(10, 3, 10, 3);
+        button.Margin = new Padding(0, 0, 7, 0);
         button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderColor = isPrimary ? Ink : Rule;
-        button.FlatAppearance.MouseOverBackColor = isPrimary ? Color.FromArgb(59, 242, 255) : Color.FromArgb(15, 34, 42);
-        button.BackColor = isPrimary ? Ink : SoftPaper;
-        button.ForeColor = isPrimary ? Paper : Ink;
+        button.FlatAppearance.BorderColor = primary ? Cyan : Rule;
+        button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(132, 234, 239) : Color.FromArgb(35, 50, 56);
+        button.BackColor = primary ? Cyan : Surface;
+        button.ForeColor = primary ? Paper : Ink;
         button.Cursor = Cursors.Hand;
-        button.Font = new Font("Arial", 9F, FontStyle.Bold);
+        button.Font = new Font("Arial", 9, FontStyle.Bold);
+    }
+
+    private static void CopyText(string value)
+    {
+        try { if (!string.IsNullOrEmpty(value)) Clipboard.SetText(value); }
+        catch (Exception error) { MessageBox.Show(error.Message, "Không sao chép được", MessageBoxButtons.OK, MessageBoxIcon.Information); }
     }
 
     private static void OpenLocalPage(string url)
     {
         try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
-        catch (Exception error) { MessageBox.Show(error.Message, "Không mở được trang", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        catch (Exception error) { MessageBox.Show(error.Message, "Không mở được trang", MessageBoxButtons.OK, MessageBoxIcon.Information); }
     }
 
     private sealed class CredentialsForm : Form
@@ -478,58 +416,39 @@ internal sealed class MainForm : Form
         {
             Text = "Tài khoản quản trị đầu tiên";
             StartPosition = FormStartPosition.CenterParent;
+            ClientSize = new Size(580, 345);
             FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
-            MinimizeBox = false;
-            ShowInTaskbar = false;
-            ClientSize = new Size(570, 330);
+            MaximizeBox = MinimizeBox = false;
             BackColor = Paper;
-            ForeColor = Ink;
-            Font = new Font("Arial", 9.5F);
-
-            var eyebrow = Eyebrow("CHỈ HIỆN MỘT LẦN");
-            eyebrow.Location = new Point(24, 20);
-            eyebrow.Size = new Size(500, 18);
-            var title = new Label
-            {
-                Text = "Lưu thông tin đăng nhập",
-                Location = new Point(24, 48),
-                Size = new Size(510, 38),
-                Font = new Font("Arial", 21F),
-                UseCompatibleTextRendering = true,
-            };
-            var note = new Label
-            {
-                Text = "Mật khẩu tạm sẽ không hiển thị lại. Sau khi đăng nhập, hệ thống yêu cầu bạn đổi mật khẩu.",
-                Location = new Point(25, 92),
-                Size = new Size(510, 42),
-                ForeColor = Muted,
-            };
-            var usernameBox = CredentialBox(credentials.Username);
-            usernameBox.Location = new Point(25, 151);
-            var passwordBox = CredentialBox(credentials.Password);
-            passwordBox.Location = new Point(25, 199);
-            var open = new Button { Text = "Mở cổng quản trị", Location = new Point(25, 256), Size = new Size(160, 36) };
-            ConfigureButton(open, open.Text, true);
+            Font = new Font("Arial", 10);
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            var page = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(24), ColumnCount = 1, RowCount = 7 };
+            page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 35));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+            page.RowStyles.Add(new RowStyle(SizeType.Absolute, 35));
+            page.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            page.Controls.Add(Label("Lưu thông tin đăng nhập", 20, true));
+            page.Controls.Add(Label("Mật khẩu tạm chỉ hiện một lần. Hệ thống sẽ yêu cầu đổi mật khẩu sau khi đăng nhập.", 10, false, Muted));
+            page.Controls.Add(Label("Tên đăng nhập", 9, true));
+            page.Controls.Add(new TextBox { Text = credentials.Username, ReadOnly = true, Dock = DockStyle.Fill, BackColor = Surface, ForeColor = Ink });
+            page.Controls.Add(Label("Mật khẩu tạm", 9, true));
+            page.Controls.Add(new TextBox { Text = credentials.Password, ReadOnly = true, Dock = DockStyle.Fill, BackColor = Surface, ForeColor = Ink });
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0, 14, 0, 0) };
+            var open = new Button(); var copy = new Button(); var done = new Button { DialogResult = DialogResult.OK };
+            ConfigureButton(open, "Mở quản trị", true);
+            ConfigureButton(copy, "Sao chép mật khẩu", false);
+            ConfigureButton(done, "Đã lưu", false);
             open.Click += (_, _) => OpenLocalPage(credentials.Url);
-            var copy = new Button { Text = "Sao chép mật khẩu", Location = new Point(195, 256), Size = new Size(160, 36) };
-            ConfigureButton(copy, copy.Text, false);
-            copy.Click += (_, _) => { Clipboard.SetText(credentials.Password); copy.Text = "Đã sao chép"; };
-            var done = new Button { Text = "Đã lưu", Location = new Point(445, 256), Size = new Size(90, 36), DialogResult = DialogResult.OK };
-            ConfigureButton(done, done.Text, false);
-            Controls.AddRange([eyebrow, title, note, usernameBox, passwordBox, open, copy, done]);
+            copy.Click += (_, _) => { CopyText(credentials.Password); copy.Text = "Đã sao chép"; };
+            actions.Controls.AddRange([open, copy, done]);
+            page.Controls.Add(actions);
+            Controls.Add(page);
             AcceptButton = done;
         }
-
-        private static TextBox CredentialBox(string value) => new()
-        {
-            Text = value,
-            ReadOnly = true,
-            BorderStyle = BorderStyle.FixedSingle,
-            BackColor = White,
-            ForeColor = Ink,
-            Font = new Font("Arial", 10F),
-            Size = new Size(510, 32),
-        };
     }
 }

@@ -9,21 +9,26 @@ namespace Qldetai.ServiceManager;
 internal sealed record ServiceStatus(string Id, string Name, string Port, bool Running, string Health, int Containers, bool External = false);
 internal sealed record InitialAdmin(string Username, string Password, string Url);
 internal sealed record StackStartResult(bool BuiltImages, string AdminMessage, InitialAdmin? Credentials);
+internal sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError);
 
 internal sealed class ServiceCoordinator
 {
     private readonly string _root;
     private readonly string _composeFile;
     private bool _environmentCreatedOnLaunch;
+    private readonly Func<IReadOnlyList<string>, string?, TimeSpan, CancellationToken, Task<CommandResult>>? _commandRunner;
     private static readonly string[] ServiceIds =
     [
         "identity-db", "academic-db", "registration-db",
         "identity-service", "academic-service", "registration-service", "api-gateway", "web",
     ];
 
-    public ServiceCoordinator()
+    public ServiceCoordinator() : this(FindRepositoryRoot()) { }
+
+    internal ServiceCoordinator(string root, Func<IReadOnlyList<string>, string?, TimeSpan, CancellationToken, Task<CommandResult>>? commandRunner = null)
     {
-        _root = FindRepositoryRoot();
+        _root = root;
+        _commandRunner = commandRunner;
         _composeFile = Path.Combine(_root, "compose.yaml");
         // The UI reads WEB_PORT while it is being built, before StartAllAsync runs.
         // Create the ignored local .env on a fresh clone before any UI code reads it.
@@ -31,7 +36,7 @@ internal sealed class ServiceCoordinator
     }
 
     public string RepositoryRoot => _root;
-    public string WebHostPort => ReadEnvValue("WEB_PORT") ?? "5173";
+    public string WebHostPort => int.TryParse(ReadEnvValue("WEB_PORT"), out var port) && port is > 0 and <= 65535 ? port.ToString() : "5173";
 
     public async Task<StackStartResult> StartAllAsync(bool forceBuild, IProgress<string> progress, CancellationToken cancellationToken)
     {
@@ -49,20 +54,22 @@ internal sealed class ServiceCoordinator
             progress.Report($"Đang dùng giao diện dự án đã chạy tại cổng {WebHostPort}; giữ nguyên tiến trình hiện tại.");
         }
         var targets = externalWeb ? ServiceIds.Where(id => id != "web").ToArray() : ServiceIds;
-        // Always ask Compose to build before starting. Docker reuses cached layers,
-        // but this ensures a `git pull` is reflected in already-existing containers.
-        var shouldBuild = true;
+        // Cached builds include new source after git pull. The explicit rebuild
+        // action also discards cached build layers, without removing data volumes.
+        if (forceBuild)
+        {
+            progress.Report("Đang dựng sạch image; dữ liệu database được giữ nguyên…");
+            await RunComposeAsync(["build", "--no-cache", .. targets], null, TimeSpan.FromMinutes(20), cancellationToken);
+        }
         progress.Report("Đang cập nhật image từ mã dự án và bật các dịch vụ…");
-        var args = new List<string> { "up", "-d" };
-        if (shouldBuild) args.Add("--build");
+        var args = new List<string> { "up", "-d", "--build" };
         args.AddRange(targets);
         await RunComposeAsync(args, null, TimeSpan.FromMinutes(20), cancellationToken);
         await WaitUntilHealthyAsync(progress, externalWeb, cancellationToken);
-        await RemoveRetiredLegacyContainersAsync(cancellationToken);
 
         progress.Report("Đang kiểm tra tài khoản quản trị ban đầu…");
         var (adminMessage, credentials) = await EnsureFirstAdminAsync(cancellationToken);
-        return new StackStartResult(shouldBuild, adminMessage, credentials);
+        return new StackStartResult(true, adminMessage, credentials);
     }
 
     public async Task SetServiceAsync(string serviceId, bool start, CancellationToken cancellationToken)
@@ -71,13 +78,21 @@ internal sealed class ServiceCoordinator
         if (serviceId == "web" && await IsProjectWebAlreadyAvailableAsync(cancellationToken)
             && (await GetServiceStatusesAsync(cancellationToken)).Any(service => service.Id == "web" && service.External))
             throw new InvalidOperationException($"Giao diện dự án đang được chạy bên ngoài Docker tại http://localhost:{WebHostPort}; trình quản lý sẽ không dừng hoặc thay thế tiến trình đó.");
-        await RunComposeAsync(start ? ["up", "-d", serviceId] : ["stop", serviceId], null, TimeSpan.FromMinutes(5), cancellationToken);
+        await RunComposeAsync(start ? ["up", "-d", "--no-deps", serviceId] : ["stop", serviceId], null, TimeSpan.FromMinutes(5), cancellationToken);
+    }
+
+    public async Task StopAllAsync(CancellationToken cancellationToken) =>
+        await RunComposeAsync(["stop", .. ServiceIds], null, TimeSpan.FromMinutes(5), cancellationToken);
+
+    public async Task<string> GetServiceLogsAsync(string serviceId, CancellationToken cancellationToken)
+    {
+        if (!ServiceIds.Contains(serviceId, StringComparer.Ordinal)) throw new ArgumentOutOfRangeException(nameof(serviceId));
+        var result = await RunComposeAsync(["logs", "--no-color", "--tail", "80", serviceId], null, TimeSpan.FromSeconds(15), cancellationToken);
+        return Redact((result.StandardOutput + result.StandardError).Trim());
     }
 
     public async Task<IReadOnlyList<ServiceStatus>> GetServiceStatusesAsync(CancellationToken cancellationToken)
     {
-        try
-        {
             var result = await RunComposeAsync(["ps", "--all", "--format", "json"], null, TimeSpan.FromSeconds(8), cancellationToken);
             var containers = ParseContainers(result.StandardOutput);
             var statuses = BuildStatuses(containers);
@@ -94,11 +109,6 @@ internal sealed class ServiceCoordinator
                         : service).ToArray();
             }
             return statuses;
-        }
-        catch
-        {
-            return EmptyStatuses();
-        }
     }
 
     public async Task<bool> IsDockerAvailableAsync(CancellationToken cancellationToken)
@@ -111,7 +121,7 @@ internal sealed class ServiceCoordinator
         catch { return false; }
     }
 
-    private string FindRepositoryRoot()
+    private static string FindRepositoryRoot()
     {
         var candidates = new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory };
         foreach (var candidate in candidates)
@@ -139,6 +149,7 @@ internal sealed class ServiceCoordinator
         ReplacePlaceholder("POSTGRES_PASSWORD", 30);
         ReplacePlaceholder("JWT_SECRET", 48);
         ReplacePlaceholder("TOTP_ENCRYPTION_KEY", 48);
+        ReplacePlaceholder("INTERNAL_SERVICE_SECRET", 48);
 
         if (changed) File.WriteAllText(envPath, content, new System.Text.UTF8Encoding(false));
         return changed;
@@ -146,16 +157,21 @@ internal sealed class ServiceCoordinator
         void ReplacePlaceholder(string name, int bytes)
         {
             var match = Regex.Match(content, $"^{Regex.Escape(name)}=(.*)$", RegexOptions.Multiline);
-            if (!match.Success) return;
-            if (!created && !match.Groups[1].Value.StartsWith("local-", StringComparison.Ordinal) && !match.Groups[1].Value.StartsWith("replace-with", StringComparison.Ordinal)) return;
+            if (match.Success && !created && !string.IsNullOrWhiteSpace(match.Groups[1].Value)
+                && !match.Groups[1].Value.StartsWith("local-", StringComparison.Ordinal)
+                && !match.Groups[1].Value.StartsWith("replace-with", StringComparison.Ordinal)) return;
             var value = Convert.ToBase64String(RandomNumberGenerator.GetBytes(bytes)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-            content = Regex.Replace(content, $"^{Regex.Escape(name)}=.*$", $"{name}={value}", RegexOptions.Multiline);
+            content = match.Success
+                ? Regex.Replace(content, $"^{Regex.Escape(name)}=.*$", $"{name}={value}", RegexOptions.Multiline)
+                : content.TrimEnd() + Environment.NewLine + $"{name}={value}" + Environment.NewLine;
             changed = true;
         }
     }
 
     private async Task EnsureDockerAsync(IProgress<string> progress, CancellationToken cancellationToken)
     {
+        var info = await TryDockerInfoAsync(cancellationToken);
+        if (info.Available) return;
         var desktop = FindDockerDesktop();
         var desktopRunning = IsDockerDesktopRunning();
         if (!desktopRunning && desktop is not null)
@@ -163,7 +179,7 @@ internal sealed class ServiceCoordinator
             progress.Report("Docker Desktop chưa mở; đang tự khởi động ứng dụng…");
             try
             {
-                Process.Start(new ProcessStartInfo(desktop) { UseShellExecute = true });
+                Process.Start(new ProcessStartInfo(desktop) { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden });
                 desktopRunning = true;
             }
             catch (Exception error)
@@ -172,7 +188,7 @@ internal sealed class ServiceCoordinator
             }
         }
 
-        var info = await TryDockerInfoAsync(cancellationToken);
+        info = await TryDockerInfoAsync(cancellationToken);
         if (info.Available) return;
         if (IsManuallyPaused(info.Error))
             throw new InvalidOperationException("Docker Desktop đang tạm dừng. Hãy chọn biểu tượng cá voi Docker ở khay hệ thống, bỏ tạm dừng, rồi bấm Thử lại.");
@@ -236,14 +252,26 @@ internal sealed class ServiceCoordinator
     private async Task WaitUntilHealthyAsync(IProgress<string> progress, bool externalWeb, CancellationToken cancellationToken)
     {
         progress.Report("Đang chờ database, domain service, Gateway và giao diện khỏe…");
+        var pending = "";
         for (var attempt = 0; attempt < 150; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var statuses = await GetServiceStatusesAsync(cancellationToken);
-            if (statuses.Where(service => !externalWeb || service.Id != "web").All(service => service.Running && service.Health.Equals("healthy", StringComparison.OrdinalIgnoreCase))) return;
+            try
+            {
+                var statuses = await GetServiceStatusesAsync(cancellationToken);
+                var waiting = statuses.Where(service => (!externalWeb || service.Id != "web")
+                    && (!service.Running || !service.Health.Equals("healthy", StringComparison.OrdinalIgnoreCase))).ToArray();
+                if (waiting.Length == 0) return;
+                pending = string.Join(", ", waiting.Select(service => service.Name));
+                if (attempt % 5 == 0) progress.Report($"Đang chờ: {pending}.");
+            }
+            catch (Exception error) when (error is not OperationCanceledException)
+            {
+                pending = error.Message;
+            }
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         }
-        throw new InvalidOperationException("Các dịch vụ chưa sẵn sàng sau thời gian chờ. Kiểm tra Docker Desktop rồi chọn Thử lại.");
+        throw new InvalidOperationException($"Các dịch vụ chưa sẵn sàng sau thời gian chờ: {pending}. Xem nhật ký dịch vụ rồi chọn Thử lại.");
     }
 
     private async Task<(string Message, InitialAdmin? Credentials)> EnsureFirstAdminAsync(CancellationToken cancellationToken)
@@ -269,8 +297,10 @@ internal sealed class ServiceCoordinator
 
     private string? ReadEnvValue(string name)
     {
-        var line = File.ReadLines(Path.Combine(_root, ".env")).FirstOrDefault(value => value.StartsWith(name + "=", StringComparison.Ordinal));
-        return line is null ? null : line[(name.Length + 1)..].Trim();
+        var path = Path.Combine(_root, ".env");
+        if (!File.Exists(path)) return null;
+        var line = File.ReadLines(path).FirstOrDefault(value => value.TrimStart().StartsWith(name + "=", StringComparison.Ordinal));
+        return line is null ? null : line[(line.IndexOf('=') + 1)..].Trim().Trim('"', '\'');
     }
 
     private async Task<CommandResult> RunComposeAsync(IReadOnlyList<string> arguments, string? input, TimeSpan timeout, CancellationToken cancellationToken)
@@ -284,11 +314,12 @@ internal sealed class ServiceCoordinator
 
     private async Task<CommandResult> RunDockerAsync(IReadOnlyList<string> arguments, string? input, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        if (_commandRunner is not null) return await _commandRunner(arguments, input, timeout, cancellationToken);
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "docker",
+                FileName = FindDockerCli(),
                 WorkingDirectory = _root,
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -328,20 +359,9 @@ internal sealed class ServiceCoordinator
         return new CommandResult(process.ExitCode, await stdoutTask, await stderrTask);
     }
 
-    private async Task RemoveRetiredLegacyContainersAsync(CancellationToken cancellationToken)
-    {
-        foreach (var service in new[] { "api", "database" })
-        {
-            var listed = await RunDockerAsync(["ps", "-aq", "--filter", $"label=com.docker.compose.project.working_dir={_root}", "--filter", $"label=com.docker.compose.service={service}"], null, TimeSpan.FromSeconds(8), cancellationToken);
-            if (listed.ExitCode != 0) continue;
-            foreach (var id in listed.StandardOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                await RunDockerAsync(["rm", "-f", id], null, TimeSpan.FromSeconds(20), cancellationToken);
-        }
-    }
-
     private string FormatDockerError(CommandResult result)
     {
-        var detail = (result.StandardError + "\n" + result.StandardOutput).Trim();
+        var detail = Redact((result.StandardError + "\n" + result.StandardOutput).Trim());
         if (IsManuallyPaused(detail)) return "Docker Desktop đang tạm dừng. Hãy bỏ tạm dừng từ biểu tượng Docker trên khay hệ thống rồi thử lại.";
         if (detail.Contains("port is already allocated", StringComparison.OrdinalIgnoreCase)
             || detail.Contains("address already in use", StringComparison.OrdinalIgnoreCase))
@@ -399,7 +419,9 @@ internal sealed class ServiceCoordinator
         {
             var found = containers.Where(container => GetString(container, "Service", "service") == id).ToList();
             var running = found.Any(container => GetString(container, "State", "state").Equals("running", StringComparison.OrdinalIgnoreCase));
-            var health = found.Select(container => GetString(container, "Health", "health")).FirstOrDefault(value => value.Length > 0) ?? (running ? "running" : "stopped");
+            var active = found.FirstOrDefault(container => GetString(container, "State", "state").Equals("running", StringComparison.OrdinalIgnoreCase));
+            var health = active.ValueKind == JsonValueKind.Object ? GetString(active, "Health", "health") : "stopped";
+            if (string.IsNullOrWhiteSpace(health)) health = running ? "running" : "stopped";
             var display = id switch
             {
                 "identity-db" => ("Cơ sở dữ liệu định danh", "NỘI BỘ · 5432"),
@@ -439,7 +461,24 @@ internal sealed class ServiceCoordinator
         return string.Empty;
     }
 
-    private IReadOnlyList<ServiceStatus> EmptyStatuses() => BuildStatuses(Array.Empty<JsonElement>());
+    private string Redact(string message)
+    {
+        foreach (var key in new[] { "POSTGRES_PASSWORD", "JWT_SECRET", "TOTP_ENCRYPTION_KEY", "INTERNAL_SERVICE_SECRET" })
+        {
+            var value = ReadEnvValue(key);
+            if (!string.IsNullOrWhiteSpace(value)) message = message.Replace(value, "[đã ẩn]", StringComparison.Ordinal);
+        }
+        return message;
+    }
 
-    private sealed record CommandResult(int ExitCode, string StandardOutput, string StandardError);
+    private static string FindDockerCli()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Docker", "Docker", "resources", "bin", "docker.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "DockerDesktop", "resources", "bin", "docker.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Docker", "Docker", "resources", "bin", "docker.exe"),
+        };
+        return candidates.FirstOrDefault(File.Exists) ?? "docker";
+    }
 }
