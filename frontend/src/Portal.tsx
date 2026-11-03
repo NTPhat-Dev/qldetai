@@ -189,6 +189,10 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
         setMessage('Thời gian đóng đăng ký phải trước ngày kết thúc học kỳ.')
         return
       }
+      if (round && (open < new Date(round.opens_at) || close > new Date(round.closes_at))) {
+        setMessage('Thời gian nhận đăng ký của đề tài phải nằm trong đợt đăng ký.')
+        return
+      }
       values.opensAt = open.toISOString()
       values.closesAt = close.toISOString()
     }

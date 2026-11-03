@@ -16,7 +16,7 @@ Mã hồ sơ sinh viên/giảng viên sinh tự động và là tên đăng nh�
 
 ## Khoa, lớp và đợt
 
-Tên khoa được kiểm tra trùng sau khi chuẩn hóa dấu, chữ hoa/thường và khoảng trắng. Mã khoa, mã lớp, mã học kỳ và mã đợt được hệ thống tạo; quản trị chọn học kỳ 1 hoặc 2 và khai báo ngày học kỳ, thời gian mở/đóng nhận đăng ký. Đợt mặc định đóng; quản trị mở khi sẵn sàng. Thời gian đăng ký đề tài do đợt được chọn quyết định.
+Tên khoa được kiểm tra trùng sau khi chuẩn hóa dấu, chữ hoa/thường và khoảng trắng. Mã khoa, mã lớp, mã học kỳ và mã đợt được hệ thống tạo; quản trị chọn học kỳ 1 hoặc 2 và khai báo ngày bắt đầu/kết thúc học kỳ. Đợt mặc định đóng, có khung thời gian bằng học kỳ và được quản trị mở khi sẵn sàng. Giảng viên chọn thời gian nhận đăng ký cho từng đề tài trong giới hạn của đợt và học kỳ.
 
 ## Đề tài và đơn
 

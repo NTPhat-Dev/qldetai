@@ -23,6 +23,8 @@ async function policyChange(scope,id,change) {
   }
 }
 const initials = (name) => name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[đĐ]/g, 'd').toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean).map((word) => word[0]).join('').slice(0, 8)
+const validCalendarDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && Number.isFinite(Date.parse(value)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value
 
 app.use(async (ctx) => {
   if (ctx.path.startsWith('/api/admin/') || ctx.path.startsWith('/api/portal/topics') || ctx.path === '/api/portal/rounds') {
@@ -30,7 +32,7 @@ app.use(async (ctx) => {
     ctx.state.user = user
   }
   if (ctx.method === 'GET' && ctx.path === '/api/portal/rounds') {
-    ctx.body = (await pool.query(`SELECT r.id,r.code,r.opens_at,r.closes_at,r.is_open,s.code AS semester_code,s.name AS semester_name,s.starts_on AS semester_start,s.ends_on AS semester_end
+    ctx.body = (await pool.query(`SELECT r.id,r.code,r.opens_at,r.closes_at,r.is_open,s.code AS semester_code,s.name AS semester_name,s.starts_on::text AS semester_start,s.ends_on::text AS semester_end
       FROM academic.rounds r JOIN academic.semesters s ON s.id=r.semester_id
       WHERE r.closes_at>clock_timestamp() ORDER BY r.opens_at DESC`)).rows
     return
@@ -77,15 +79,14 @@ app.use(async (ctx) => {
   if (ctx.method === 'GET' && ctx.path === '/api/admin/rounds') {
     ctx.body = (await pool.query(`SELECT r.id,r.code,r.opens_at,r.closes_at,r.is_open,
       CASE WHEN NOT r.is_open THEN 'CLOSED' WHEN clock_timestamp()<r.opens_at THEN 'SCHEDULED' WHEN clock_timestamp()>=r.closes_at THEN 'EXPIRED' ELSE 'OPEN' END AS window_state,
-      s.code AS semester_code,s.name AS semester_name,s.starts_on AS semester_start,s.ends_on AS semester_end
+      s.code AS semester_code,s.name AS semester_name,s.starts_on::text AS semester_start,s.ends_on::text AS semester_end
       FROM academic.rounds r JOIN academic.semesters s ON s.id=r.semester_id ORDER BY r.opens_at DESC`)).rows
     return
   }
   if (ctx.method === 'POST' && ctx.path === '/api/admin/rounds') {
     let { semesterNumber, semesterStart, semesterEnd, opensAt, closesAt } = ctx.request.body ?? {}
     const semester = Number(semesterNumber)
-    const semesterDatesValid = typeof semesterStart === 'string' && typeof semesterEnd === 'string'
-      && Number.isFinite(Date.parse(semesterStart)) && Number.isFinite(Date.parse(semesterEnd))
+    const semesterDatesValid = validCalendarDate(semesterStart) && validCalendarDate(semesterEnd)
     if (!opensAt && semesterDatesValid) opensAt = new Date(`${semesterStart}T00:00:00+07:00`).toISOString()
     if (!closesAt && semesterDatesValid) closesAt = new Date(`${semesterEnd}T23:59:59.999+07:00`).toISOString()
     const roundDatesValid = typeof opensAt === 'string' && typeof closesAt === 'string'
@@ -134,7 +135,7 @@ app.use(async (ctx) => {
     const numericCapacity = Number(capacity)
     if (typeof title !== 'string' || !title.trim() || title.length > 240 || (typeof description === 'string' && description.length > 10000) || typeof roundId !== 'string') ctx.throw(400, 'Nhập tên đề tài và chọn đợt đăng ký.')
     if (capacity == null || String(capacity).trim() === '' || !Number.isSafeInteger(numericCapacity) || numericCapacity < 1) ctx.throw(400, 'Số lượng phải là số nguyên từ 1 trở lên.')
-    const roundResult = await pool.query('SELECT r.id,r.code,r.opens_at,r.closes_at,s.starts_on,s.ends_on FROM academic.rounds r JOIN academic.semesters s ON s.id=r.semester_id WHERE r.id=$1 AND r.closes_at>clock_timestamp()', [roundId])
+    const roundResult = await pool.query('SELECT r.id,r.code,r.opens_at,r.closes_at,s.starts_on::text AS semester_start,s.ends_on::text AS semester_end FROM academic.rounds r JOIN academic.semesters s ON s.id=r.semester_id WHERE r.id=$1 AND r.closes_at>clock_timestamp()', [roundId])
     if (!roundResult.rowCount) ctx.throw(400, 'Đợt đăng ký không tồn tại hoặc đã hết hạn.')
     let topicOpensAt = roundResult.rows[0].opens_at
     let topicClosesAt = roundResult.rows[0].closes_at
@@ -144,10 +145,11 @@ app.use(async (ctx) => {
       const cDate = new Date(closesAt).getTime()
       if (isNaN(oDate) || isNaN(cDate)) ctx.throw(400, 'Thời gian nhận đăng ký không hợp lệ.')
       if (oDate >= cDate) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải sau thời gian mở.')
-      const semStart = new Date(`${roundResult.rows[0].starts_on}T00:00:00+07:00`).getTime()
-      const semEnd = new Date(`${roundResult.rows[0].ends_on}T23:59:59.999+07:00`).getTime()
+      const semStart = new Date(`${roundResult.rows[0].semester_start}T00:00:00+07:00`).getTime()
+      const semEnd = new Date(`${roundResult.rows[0].semester_end}T23:59:59.999+07:00`).getTime()
       if (oDate < semStart) ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
       if (cDate > semEnd) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
+      if (oDate < new Date(roundResult.rows[0].opens_at).getTime() || cDate > new Date(roundResult.rows[0].closes_at).getTime()) ctx.throw(400, 'Thời gian nhận đăng ký của đề tài phải nằm trong đợt đăng ký.')
       topicOpensAt = new Date(opensAt).toISOString()
       topicClosesAt = new Date(closesAt).toISOString()
     }
@@ -175,7 +177,7 @@ app.use(async (ctx) => {
     const { title,description,capacity,opensAt,closesAt } = ctx.request.body ?? {}
     if (typeof title !== 'string' || !title.trim() || title.length > 240 || !Number.isSafeInteger(Number(capacity)) || Number(capacity)<1 || typeof description !== 'string' || description.length>10000) ctx.throw(400, 'Nhập tên, mô tả và số lượng hợp lệ.')
     ctx.body = await policyChange('topic',editTopic[1],async (client) => {
-    const own = await client.query('SELECT t.id,t.published,t.opens_at,t.closes_at,s.starts_on,s.ends_on FROM academic.topics t LEFT JOIN academic.topic_round_windows w ON w.topic_id=t.id LEFT JOIN academic.rounds r ON r.id=w.round_id LEFT JOIN academic.semesters s ON s.id=r.semester_id WHERE t.id=$1 AND t.lecturer_id=$2', [editTopic[1],ctx.state.user.sub])
+    const own = await client.query('SELECT t.id,t.published,t.opens_at,t.closes_at,r.opens_at AS round_opens_at,r.closes_at AS round_closes_at,s.starts_on::text AS semester_start,s.ends_on::text AS semester_end FROM academic.topics t LEFT JOIN academic.topic_round_windows w ON w.topic_id=t.id LEFT JOIN academic.rounds r ON r.id=w.round_id LEFT JOIN academic.semesters s ON s.id=r.semester_id WHERE t.id=$1 AND t.lecturer_id=$2', [editTopic[1],ctx.state.user.sub])
     if (!own.rowCount) ctx.throw(404,'Không tìm thấy đề tài của bạn.')
     if (own.rows[0].published) ctx.throw(409,'Chỉ được sửa đề tài ở trạng thái bản nháp.')
     let topicOpensAt = own.rows[0].opens_at
@@ -184,16 +186,22 @@ app.use(async (ctx) => {
       const oDate = new Date(opensAt).getTime()
       const cDate = new Date(closesAt).getTime()
       if (isNaN(oDate) || isNaN(cDate) || oDate >= cDate) ctx.throw(400, 'Thời gian nhận đăng ký không hợp lệ.')
-      if (own.rows[0].starts_on && oDate < new Date(`${own.rows[0].starts_on}T00:00:00+07:00`).getTime()) ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
-      if (own.rows[0].ends_on && cDate > new Date(`${own.rows[0].ends_on}T23:59:59.999+07:00`).getTime()) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
+      if (own.rows[0].semester_start && oDate < new Date(`${own.rows[0].semester_start}T00:00:00+07:00`).getTime()) ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
+      if (own.rows[0].semester_end && cDate > new Date(`${own.rows[0].semester_end}T23:59:59.999+07:00`).getTime()) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
+      if (own.rows[0].round_opens_at && oDate < new Date(own.rows[0].round_opens_at).getTime()) ctx.throw(400, 'Thời gian mở nhận đăng ký phải nằm trong đợt đăng ký.')
+      if (own.rows[0].round_closes_at && cDate > new Date(own.rows[0].round_closes_at).getTime()) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải nằm trong đợt đăng ký.')
       topicOpensAt = new Date(opensAt).toISOString()
       topicClosesAt = new Date(closesAt).toISOString()
     }
     await fence('topics',editTopic[1],true)
-    const result = await client.query('UPDATE academic.topics SET title=$1,description=$2,capacity=$3,opens_at=$4,closes_at=$5 WHERE id=$6 AND lecturer_id=$7 AND NOT published RETURNING id,code,title,description,capacity,opens_at,closes_at,published', [title.trim(),description.trim()||null,Number(capacity),topicOpensAt,topicClosesAt,editTopic[1],ctx.state.user.sub])
-    await client.query('UPDATE academic.topic_round_windows SET opens_at=$1,closes_at=$2 WHERE topic_id=$3', [topicOpensAt,topicClosesAt,editTopic[1]])
-    if (!result.rowCount) ctx.throw(409,'Trạng thái đề tài đã thay đổi. Hãy tải lại.')
-    return result.rows[0]
+    await client.query('BEGIN')
+    try {
+      const result = await client.query('UPDATE academic.topics SET title=$1,description=$2,capacity=$3,opens_at=$4,closes_at=$5 WHERE id=$6 AND lecturer_id=$7 AND NOT published RETURNING id,code,title,description,capacity,opens_at,closes_at,published', [title.trim(),description.trim()||null,Number(capacity),topicOpensAt,topicClosesAt,editTopic[1],ctx.state.user.sub])
+      if (!result.rowCount) ctx.throw(409,'Trạng thái đề tài đã thay đổi. Hãy tải lại.')
+      await client.query('UPDATE academic.topic_round_windows SET opens_at=$1,closes_at=$2 WHERE topic_id=$3', [topicOpensAt,topicClosesAt,editTopic[1]])
+      await client.query('COMMIT')
+      return result.rows[0]
+    } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error }
     }); return
   }
   const publication = ctx.path.match(/^\/api\/portal\/topics\/([^/]+)\/publication$/)
