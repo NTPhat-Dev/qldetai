@@ -144,7 +144,11 @@ app.use(async (ctx, next) => {
       await reserveAttempt(ctx, 'mfa-passkey-options', `${claims.sub}:${clientIp(ctx)}`, 20)
       const passkeys = await pool.query('SELECT credential_id,transports FROM identity.passkeys WHERE user_id=$1', [claims.sub])
       if (!passkeys.rowCount) ctx.throw(400, 'Tài khoản chưa đăng ký Passkey.')
-      const options = await generateAuthenticationOptions({ rpID: webauthnRPID, userVerification: 'required', allowCredentials: passkeys.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })) })
+      // Keep older credentials usable until their owners replace them with a phone passkey.
+      const phonePasskeys = passkeys.rows.filter((item) => item.transports?.includes('hybrid'))
+      const eligiblePasskeys = phonePasskeys.length ? phonePasskeys : passkeys.rows
+      const options = await generateAuthenticationOptions({ rpID: webauthnRPID, timeout: 120000, userVerification: 'required', allowCredentials: eligiblePasskeys.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })) })
+      options.hints = ['hybrid']
       ctx.body = { options, challengeToken: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: claims.mustChangePassword, tokenVersion: claims.tokenVersion, mfaPending: true, webauthnChallenge: options.challenge, purpose: 'mfa-passkey' }, identityPrivateKey, { expiresIn: '5m', algorithm: 'RS256' }) }
       return
     }
@@ -200,7 +204,7 @@ app.use(async (ctx, next) => {
   if (ctx.method === 'GET' && ctx.path === '/api/portal/security') {
     const [totp, passkeys, recovery] = await Promise.all([
       pool.query('SELECT confirmed_at IS NOT NULL AS enabled FROM identity.totp_factors WHERE user_id=$1', [ctx.state.identity.sub]),
-      pool.query('SELECT id,label,created_at,last_used_at AS last_used FROM identity.passkeys WHERE user_id=$1 ORDER BY created_at', [ctx.state.identity.sub]),
+      pool.query('SELECT id,label,transports,created_at,last_used_at AS last_used FROM identity.passkeys WHERE user_id=$1 ORDER BY created_at', [ctx.state.identity.sub]),
       pool.query('SELECT count(*)::int AS remaining FROM identity.recovery_codes WHERE user_id=$1 AND used_at IS NULL', [ctx.state.identity.sub]),
     ])
     ctx.body = { totpEnabled: Boolean(totp.rows[0]?.enabled), passkeys: passkeys.rows, recoveryCodesRemaining: recovery.rows[0].remaining }
@@ -253,7 +257,7 @@ app.use(async (ctx, next) => {
     const { currentPassword } = ctx.request.body ?? {}
     const user = await requireCurrentPassword(ctx, ctx.state.identity.sub, currentPassword, 'Nhập đúng mật khẩu hiện tại để thêm Passkey.')
     const known = await pool.query('SELECT credential_id,transports FROM identity.passkeys WHERE user_id=$1', [ctx.state.identity.sub])
-    const options = await generateRegistrationOptions({ rpName: 'QL Đề Tài', rpID: webauthnRPID, userName: user.username, userDisplayName: user.display_name, userID: new Uint8Array(Buffer.from(ctx.state.identity.sub.replaceAll('-', ''), 'hex')), attestationType: 'none', excludeCredentials: known.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })), authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' } })
+    const options = await generateRegistrationOptions({ rpName: 'QL Đề Tài', rpID: webauthnRPID, userName: user.username, userDisplayName: user.display_name, userID: new Uint8Array(Buffer.from(ctx.state.identity.sub.replaceAll('-', ''), 'hex')), timeout: 120000, attestationType: 'none', excludeCredentials: known.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })), authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' }, preferredAuthenticatorType: 'remoteDevice' })
     ctx.body = { options, challengeToken: jwt.sign({ sub: ctx.state.identity.sub, challenge: options.challenge, purpose: 'passkey-register' }, identityPrivateKey, { expiresIn: '5m', algorithm: 'RS256' }) }
     return
   }
@@ -264,6 +268,9 @@ app.use(async (ctx, next) => {
     let verification
     try { verification = await verifyRegistrationResponse({ response, expectedChallenge: challenge.challenge, expectedOrigin: webauthnOrigin, expectedRPID: webauthnRPID, requireUserVerification: true }) } catch { ctx.throw(400, 'Không xác minh được Passkey.') }
     if (!verification?.verified || !verification.registrationInfo) ctx.throw(400, 'Đăng ký Passkey thất bại.')
+    if (response?.authenticatorAttachment !== 'cross-platform' || !Array.isArray(response?.response?.transports) || !response.response.transports.includes('hybrid')) {
+      ctx.throw(400, 'Hãy chọn điện thoại trong hộp thoại trình duyệt, bật Bluetooth và quét mã QR để thêm Passkey.')
+    }
     const credential = verification.registrationInfo.credential
     try { await pool.query('INSERT INTO identity.passkeys(user_id,credential_id,public_key,sign_count,transports,label) VALUES($1,$2,$3,$4,$5,$6)', [ctx.state.identity.sub, Buffer.from(credential.id, 'utf8'), Buffer.from(credential.publicKey), credential.counter, credential.transports ?? [], String(label ?? 'Passkey').slice(0, 80)]) }
     catch (error) { if (error.code === '23505') ctx.throw(409, 'Passkey này đã được thêm.'); throw error }

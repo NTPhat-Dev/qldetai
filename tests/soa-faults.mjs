@@ -298,6 +298,15 @@ try {
     const after = expect(await call('/api/auth/login', { method: 'POST', body: { username: student.username, password } }), 200, 'login after removing TOTP')
     assert.equal(after.mfaRequired, undefined)
   })
+  await check('Phone passkey requests use cross-device WebAuthn', async () => {
+    const student = fixtures.students[8]
+    const prepared = expect(await call('/api/portal/security/passkeys/options', { token: student.token, method: 'POST', body: { currentPassword: password } }), 200, 'prepare phone passkey')
+    assert.deepEqual(prepared.options.hints, ['hybrid'])
+    assert.equal(prepared.options.authenticatorSelection.authenticatorAttachment, 'cross-platform')
+    assert.equal(prepared.options.authenticatorSelection.userVerification, 'required')
+    assert.equal(prepared.options.timeout, 120000)
+    expect(await call('/api/portal/security/passkeys/verify', { token: student.token, method: 'POST', body: { challengeToken: 'invalid', response: {} } }), 401, 'forged passkey challenge')
+  })
   await check('Service restart preserves data and migrations are repeatable', async () => {
     const before = await sql('registration-db', 'registration', 'SELECT count(*) FROM registration.registrations')
     await run(['restart', 'identity-service', 'academic-service', 'registration-service', 'api-gateway', 'web'])

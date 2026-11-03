@@ -61,6 +61,9 @@ export async function browserSmoke({ base, fixtures, password, run, waitReady, c
     const overview = await call('/api/portal/overview', { token: fixtures.students[11].token })
     assert.equal(overview.status, 200)
     assert.equal(overview.data.registrations.filter((row) => row.topic_id === fixtures.recoveryTopic.id || row.title === 'Pending request recovery').length, 1, 'Browser queue replay creates exactly one registration')
+    await student.getByRole('navigation', { name: 'Cổng người dùng' }).getByRole('button', { name: 'Cài đặt' }).click()
+    await student.getByRole('button', { name: 'Thêm Passkey bằng điện thoại' }).waitFor()
+    await student.getByText('bật Bluetooth trên máy tính và điện thoại', { exact: false }).waitFor()
     await context.close()
 
     const lecturer = await browser.newPage({ viewport: { width: 1280, height: 900 } })

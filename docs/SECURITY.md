@@ -22,6 +22,12 @@ Thay `demo.example.com` bằng tên miền thật. Đặt `WEBAUTHN_ORIGIN=https
 
 Nếu chưa có tên miền hoặc chứng chỉ được các máy khách tin cậy, chỉ dùng tại `http://localhost:5173` trên máy chạy ứng dụng hoặc thiết lập một đường hầm riêng có HTTPS. Passkey trên máy khách cần ngữ cảnh HTTPS hợp lệ. Đổi `WEB_BIND` sang `0.0.0.0` sẽ mở HTTP trực tiếp ra mạng và không phải cấu hình bảo mật tương đương.
 
+## Passkey bằng điện thoại
+
+Khi thêm Passkey, ứng dụng yêu cầu WebAuthn ưu tiên thiết bị từ xa (`hybrid`) và chỉ lưu đăng ký mà trình duyệt báo là từ thiết bị ngoài máy tính, hỗ trợ `hybrid`. Bật Bluetooth trên cả hai thiết bị, đặt gần nhau; trong hộp thoại của Chrome/Edge chọn điện thoại hoặc thiết bị khác và quét mã QR bằng camera điện thoại. Mã QR này do trình duyệt/hệ điều hành tạo cho phiên WebAuthn; mã QR Google Authenticator trong ứng dụng là chức năng khác. Khi đăng nhập, ứng dụng ưu tiên Passkey điện thoại; Passkey cũ vẫn dùng được nếu tài khoản chưa thêm Passkey điện thoại để tránh khóa tài khoản trong lúc chuyển đổi.
+
+Ứng dụng web không thể tự bật Bluetooth, tạo mã QR WebAuthn đúng chuẩn, xác minh trực tiếp radio Bluetooth đã hoạt động, hoặc buộc trình duyệt hiển thị QR trong mọi lần đăng nhập. Trình duyệt có thể dùng điện thoại đã ghép đôi và bỏ bước quét QR. Thông tin `hybrid`/`authenticatorAttachment` do trình duyệt báo giúp định hướng luồng và lọc đăng ký, nhưng không phải bằng chứng mật mã rằng một điện thoại cụ thể đã được dùng. Cần thử với điện thoại và trình duyệt thật; bài kiểm thử tự động không giả lập được bước quét QR/Bluetooth.
+
 ## Nâng cấp từ bản cũ
 
 Chạy lại `start-service-manager.cmd` trên Windows hoặc `bash start-server.sh` trên Ubuntu trước khi gọi `docker compose` trực tiếp. Trình khởi động bổ sung bốn cặp khóa RSA vào `.env` mà không đổi mật khẩu database, khóa TOTP hay xóa volume. Token đăng nhập cũ dùng khóa đối xứng sẽ không còn hợp lệ; người dùng đăng nhập lại. Giữ `.env` và các bản sao lưu ngoài Git, chỉ cho người quản trị máy đọc. Nếu trước đây web mở trên mọi địa chỉ, sau nâng cấp nó chỉ còn ở localhost; làm theo mục HTTPS ở trên để truy cập từ xa.

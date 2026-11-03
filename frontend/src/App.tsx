@@ -92,6 +92,10 @@ function App() {
   }
 
   async function verifyPasskey() {
+    if (!window.isSecureContext || typeof window.PublicKeyCredential === 'undefined') {
+      setError('Passkey cần HTTPS hoặc localhost và trình duyệt hỗ trợ WebAuthn.')
+      return
+    }
     setLoading(true); setError('')
     try {
       const optionsResponse = await fetch(`${API}/auth/mfa/passkey/options`, { method: 'POST', headers: { Authorization: `Bearer ${mfaToken}` } })
@@ -133,7 +137,7 @@ function App() {
 
   if (token && mustChangePassword) return <main className="login-page"><section className="login-panel"><p className="eyebrow">BẢO MẬT TÀI KHOẢN</p><h1>Đổi mật khẩu lần đầu</h1><p className="password-change-note">Hãy đặt mật khẩu mới trước khi tiếp tục.</p><form className="login-form" onSubmit={handlePasswordChange}><label htmlFor="new-password">Mật khẩu mới (ít nhất 12 ký tự)</label><input id="new-password" type="password" minLength={12} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required/><label htmlFor="confirm-password">Nhập lại mật khẩu mới</label><input id="confirm-password" type="password" minLength={12} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required/>{error && <p className="form-error" role="alert">{error}</p>}<button disabled={loading}>{loading ? 'Đang cập nhật…' : 'Lưu mật khẩu mới'}</button></form></section></main>
 
-  if (mfaToken) return <main className="login-page"><section className="login-panel"><p className="eyebrow">XÁC THỰC TĂNG CƯỜNG</p><h1>Xác minh đăng nhập</h1><p className="password-change-note">Nhập mã Google Authenticator hoặc dùng Passkey đã đăng ký.</p>{mfaMethods.totp && <form className="login-form" onSubmit={verifyTotp}><label htmlFor="mfa-code">Mã 6 số hoặc mã khôi phục</label><input id="mfa-code" value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} autoComplete="one-time-code" required/>{error && <p className="form-error" role="alert">{error}</p>}<button disabled={loading}>Xác minh mã</button></form>}{mfaMethods.passkey && <button className="mfa-passkey-button" disabled={loading} onClick={() => void verifyPasskey()}>Tiếp tục bằng Passkey</button>}{!mfaMethods.totp && error && <p className="form-error" role="alert">{error}</p>}<button className="request-account-link" onClick={() => { setMfaToken(''); setError('') }}>Hủy đăng nhập</button></section></main>
+  if (mfaToken) return <main className="login-page"><section className="login-panel"><p className="eyebrow">XÁC THỰC TĂNG CƯỜNG</p><h1>Xác minh đăng nhập</h1><p className="password-change-note">Nhập mã Google Authenticator hoặc xác minh bằng điện thoại đã đăng ký Passkey.</p>{mfaMethods.totp && <form className="login-form" onSubmit={verifyTotp}><label htmlFor="mfa-code">Mã 6 số hoặc mã khôi phục</label><input id="mfa-code" value={mfaCode} onChange={(event) => setMfaCode(event.target.value)} autoComplete="one-time-code" required/>{error && <p className="form-error" role="alert">{error}</p>}<button disabled={loading}>Xác minh mã</button></form>}{mfaMethods.passkey && <><p className="password-change-note">Bật Bluetooth trên máy tính và điện thoại. Chọn dùng điện thoại trong hộp thoại trình duyệt, rồi quét mã QR nếu được yêu cầu.</p><button className="mfa-passkey-button" disabled={loading} onClick={() => void verifyPasskey()}>Xác minh bằng điện thoại</button></>}{!mfaMethods.totp && error && <p className="form-error" role="alert">{error}</p>}<button className="request-account-link" onClick={() => { setMfaToken(''); setError('') }}>Hủy đăng nhập</button></section></main>
 
   if (!isAdminPortal && token) return <Portal token={token} onTokenChange={(nextToken) => { sessionStorage.setItem(tokenKey, nextToken); setToken(nextToken) }} onLogout={() => { sessionStorage.removeItem(tokenKey); sessionStorage.removeItem(changeRequiredKey); window.history.replaceState(null, '', '/login'); setToken('') }} />
 
