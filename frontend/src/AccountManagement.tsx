@@ -63,6 +63,11 @@ export default function AccountManagement({ token, mode = 'accounts' }: { token:
     event.preventDefault()
     const form = event.currentTarget
     const payload = Object.fromEntries(new FormData(form).entries())
+    const phone = String(payload.phone ?? '').trim()
+    if (phone && !/^\d{10}$/.test(phone)) {
+      setError('Số điện thoại phải gồm đúng 10 chữ số.')
+      return
+    }
     void run(() => api<Credentials>('/admin/accounts', token, 'POST', { ...payload, role }), (result) => {
       setCredentials(result); form.reset(); setMessage('Đã cấp tài khoản. Lưu thông tin đăng nhập bên dưới trước khi đóng.'); setSelectedDepartment('')
     })
@@ -90,8 +95,8 @@ export default function AccountManagement({ token, mode = 'accounts' }: { token:
         <label>Vai trò<select value={role} onChange={(event) => setRole(event.target.value)}><option value="SINH_VIEN">Sinh viên</option><option value="GIANG_VIEN">Giảng viên</option></select></label>
         <label>Họ và tên<input name="name" required maxLength={160}/></label>
         <label>Khoa<select name="departmentId" value={selectedDepartment} onChange={(event) => setSelectedDepartment(event.target.value)} required disabled={!departments.length}><option value="">Chọn khoa</option>{departments.map((department) => <option value={department.id} key={department.id}>{department.name}</option>)}</select></label>
-        {role === 'SINH_VIEN' ? <label>Lớp<select name="classId" key={selectedDepartment} required disabled={!classes.length}><option value="">{classes.length ? 'Chọn lớp' : 'Chọn khoa có lớp'}</option>{classes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label> : <><label>Học hàm<input name="academicTitle"/></label><label>Học vị<input name="degree"/></label><label>Chuyên môn<input name="specialization"/></label></>}
-        <label>Số điện thoại<input name="phone" type="tel" maxLength={30}/></label><button className="dark-button" disabled={busy || !departments.length || (role === 'SINH_VIEN' && !classes.length)}>{busy ? 'Đang lưu…' : 'Cấp tài khoản'}</button>
+        {role === 'SINH_VIEN' ? <label>Lớp<select name="classId" key={selectedDepartment} required disabled={!classes.length}><option value="">{classes.length ? 'Chọn lớp' : 'Chọn khoa có lớp'}</option>{classes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label> : <><label>Học vị<input name="degree"/></label><label>Chuyên môn<input name="specialization"/></label></>}
+        <label>Số điện thoại<input name="phone" type="tel" maxLength={10} pattern="[0-9]{10}" placeholder="10 chữ số" title="Số điện thoại phải gồm đúng 10 chữ số" onInput={(e) => { e.currentTarget.value = e.currentTarget.value.replace(/\D/g, '').slice(0, 10) }}/></label><button className="dark-button" disabled={busy || !departments.length || (role === 'SINH_VIEN' && !classes.length)}>{busy ? 'Đang lưu…' : 'Cấp tài khoản'}</button>
       </form></details>
       <div className="filter-bar"><input aria-label="Tìm tài khoản" placeholder="Tìm họ tên, mã tài khoản hoặc khoa" value={query} onChange={(event) => setQuery(event.target.value)}/><span className="muted">{visible.length} tài khoản</span></div>
       <div className="table-wrap"><table><thead><tr><th>Họ tên</th><th>Tên đăng nhập</th><th>Vai trò</th><th>Khoa</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{visible.map((account) => <tr key={account.id}><td>{account.name}</td><td>{account.username}</td><td>{roleName(account.role)}</td><td>{account.department ?? '—'}</td><td><span className="status-pill">{account.status === 'HOAT_DONG' ? 'Hoạt động' : 'Đã khóa'}</span></td><td>{account.role !== 'QUAN_TRI' && <div className="row-actions"><button className="outline-button" disabled={busy} onClick={() => changeStatus(account)}>{account.status === 'HOAT_DONG' ? 'Khóa' : 'Mở khóa'}</button><button className="outline-button" disabled={busy} onClick={() => resetPassword(account)}>Đặt lại mật khẩu</button></div>}</td></tr>)}{!visible.length && <tr><td colSpan={6} className="empty-state">Không có tài khoản phù hợp.</td></tr>}</tbody></table></div>

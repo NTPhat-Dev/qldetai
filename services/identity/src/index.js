@@ -145,6 +145,7 @@ app.use(async (ctx, next) => {
   }
   if (ctx.method === 'PATCH' && ctx.path === '/api/portal/profile') {
     const { phone, academicTitle, degree, specialization } = ctx.request.body ?? {}
+    if (phone && phone.trim() !== '' && !/^\d{10}$/.test(phone.trim())) ctx.throw(400, 'Số điện thoại phải gồm đúng 10 chữ số.')
     await pool.query(`UPDATE identity.users SET phone=NULLIF(btrim($1),''),
       academic_title=CASE WHEN role='GIANG_VIEN' THEN NULLIF(btrim($2),'') ELSE academic_title END,
       degree=CASE WHEN role='GIANG_VIEN' THEN NULLIF(btrim($3),'') ELSE degree END,
@@ -281,6 +282,7 @@ app.use(async (ctx, next) => {
   }
   if (ctx.method === 'POST' && ctx.path === '/api/admin/accounts') {
     const { role, name, departmentId, classId, phone, academicTitle, degree, specialization } = ctx.request.body ?? {}
+    if (phone && phone.trim() !== '' && !/^\d{10}$/.test(phone.trim())) ctx.throw(400, 'Số điện thoại phải gồm đúng 10 chữ số.')
     if (!name?.trim()) ctx.throw(400, 'Điền đầy đủ thông tin tài khoản và hồ sơ.')
     if (!['SINH_VIEN', 'GIANG_VIEN'].includes(role)) ctx.throw(400, 'Vai trò cấp mới không hợp lệ.')
     if (!departmentId) ctx.throw(400, 'Chọn khoa cho tài khoản.')

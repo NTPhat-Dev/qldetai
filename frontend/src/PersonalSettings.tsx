@@ -52,6 +52,11 @@ export default function PersonalSettings({ token, page, onTokenChange }: { token
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const values = Object.fromEntries(new FormData(event.currentTarget).entries())
+    const phone = String(values.phone ?? '').trim()
+    if (phone && !/^\d{10}$/.test(phone)) {
+      setError('Số điện thoại phải gồm đúng 10 chữ số.')
+      return
+    }
     if (await send('/portal/profile', 'PATCH', values)) await loadProfile().catch(() => setError('Đã lưu hồ sơ. Chưa cập nhật được dữ liệu, hãy thử làm mới.'))
   }
 
@@ -138,11 +143,11 @@ export default function PersonalSettings({ token, page, onTokenChange }: { token
           <label>Khoa<input value={profile.department ?? ''} readOnly /></label>
           {profile.class && <label>Lớp<input value={profile.class} readOnly /></label>}
           {profile.role === 'GIANG_VIEN' && <>
-            <label>Học hàm<input name="academicTitle" defaultValue={profile.academic_title ?? ''} /></label>
+
             <label>Học vị<input name="degree" defaultValue={profile.degree ?? ''} /></label>
             <label>Chuyên môn<input name="specialization" defaultValue={profile.specialization ?? ''} /></label>
           </>}
-          <label>Số điện thoại<input name="phone" type="tel" defaultValue={profile.phone ?? ''} maxLength={30} /></label>
+          <label>Số điện thoại<input name="phone" type="tel" defaultValue={profile.phone ?? ''} maxLength={10} pattern="[0-9]{10}" placeholder="10 chữ số" title="Số điện thoại phải gồm đúng 10 chữ số" onInput={(e) => { e.currentTarget.value = e.currentTarget.value.replace(/\D/g, '').slice(0, 10) }} /></label>
           <button className="dark-button" disabled={busy}>Lưu thông tin</button>
         </form> : <p>Đang tải hồ sơ…</p>
       ) : (
