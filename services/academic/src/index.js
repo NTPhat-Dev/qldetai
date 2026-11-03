@@ -32,7 +32,7 @@ app.use(async (ctx) => {
   if (ctx.method === 'GET' && ctx.path === '/api/portal/rounds') {
     ctx.body = (await pool.query(`SELECT r.id,r.code,r.opens_at,r.closes_at,r.is_open,s.code AS semester_code,s.name AS semester_name,s.starts_on AS semester_start,s.ends_on AS semester_end
       FROM academic.rounds r JOIN academic.semesters s ON s.id=r.semester_id
-      WHERE r.closes_at>clock_timestamp() ORDER BY r.opens_at DESC`)).rows
+      WHERE r.is_open AND r.closes_at>clock_timestamp() ORDER BY r.opens_at DESC`)).rows
     return
   }
   if (ctx.method === 'GET' && ctx.path === '/api/admin/departments') {
@@ -95,10 +95,12 @@ app.use(async (ctx) => {
     const semEndDate = new Date(`${semesterEnd}T23:59:59.999+07:00`).getTime()
     const openDate = new Date(opensAt).getTime()
     const closeDate = new Date(closesAt).getTime()
+    const semStartEndOfDay = new Date(`${semesterStart}T23:59:59.999+07:00`).getTime()
+    const semEndStartOfDay = new Date(`${semesterEnd}T00:00:00+07:00`).getTime()
     if (semStartDate >= semEndDate) { ctx.throw(400, 'Ngày bắt đầu học kỳ phải trước ngày kết thúc học kỳ.') }
-    if (openDate >= closeDate) { ctx.throw(400, 'Thời gian đóng nhận đăng ký phải sau thời gian mở') }
-    if (openDate < semStartDate) { ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ' )}
-    if (closeDate > semEndDate) { ctx.throw(400, 'Thời gian đóng đăng ký phải trước ngày kết thúc học kỳ.') }
+    if (openDate >= closeDate) { ctx.throw(400, 'Thời gian đóng nhận đăng ký phải sau thời gian mở.') }
+    if (ctx.request.body?.opensAt && openDate <= semStartEndOfDay) { ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ.') }
+    if (ctx.request.body?.closesAt && closeDate >= semEndStartOfDay) { ctx.throw(400, 'Thời gian đóng nhận đăng ký phải trước ngày kết thúc học kỳ.') }
     const calendarStartYear = new Date(`${semesterStart}T00:00:00Z`).getUTCFullYear()
     const calendarEndYear = new Date(`${semesterEnd}T00:00:00Z`).getUTCFullYear()
     const schoolYearStart = semester === 1 ? calendarStartYear : calendarEndYear - 1
@@ -144,10 +146,10 @@ app.use(async (ctx) => {
       const cDate = new Date(closesAt).getTime()
       if (isNaN(oDate) || isNaN(cDate)) ctx.throw(400, 'Thời gian nhận đăng ký không hợp lệ.')
       if (oDate >= cDate) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải sau thời gian mở.')
-      const semStart = new Date(`${roundResult.rows[0].starts_on}T00:00:00+07:00`).getTime()
-      const semEnd = new Date(`${roundResult.rows[0].ends_on}T23:59:59.999+07:00`).getTime()
-      if (oDate < semStart) ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
-      if (cDate > semEnd) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
+      const semStartEndOfDay = new Date(`${roundResult.rows[0].starts_on}T23:59:59.999+07:00`).getTime()
+      const semEndStartOfDay = new Date(`${roundResult.rows[0].ends_on}T00:00:00+07:00`).getTime()
+      if (oDate <= semStartEndOfDay) ctx.throw(400, 'Ngày mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
+      if (cDate >= semEndStartOfDay) ctx.throw(400, 'Ngày đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
       topicOpensAt = new Date(opensAt).toISOString()
       topicClosesAt = new Date(closesAt).toISOString()
     }
@@ -184,8 +186,10 @@ app.use(async (ctx) => {
       const oDate = new Date(opensAt).getTime()
       const cDate = new Date(closesAt).getTime()
       if (isNaN(oDate) || isNaN(cDate) || oDate >= cDate) ctx.throw(400, 'Thời gian nhận đăng ký không hợp lệ.')
-      if (own.rows[0].starts_on && oDate < new Date(`${own.rows[0].starts_on}T00:00:00+07:00`).getTime()) ctx.throw(400, 'Thời gian mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
-      if (own.rows[0].ends_on && cDate > new Date(`${own.rows[0].ends_on}T23:59:59.999+07:00`).getTime()) ctx.throw(400, 'Thời gian đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
+      const semStartEndOfDay = new Date(`${own.rows[0].starts_on}T23:59:59.999+07:00`).getTime()
+      const semEndStartOfDay = new Date(`${own.rows[0].ends_on}T00:00:00+07:00`).getTime()
+      if (own.rows[0].starts_on && oDate <= semStartEndOfDay) ctx.throw(400, 'Ngày mở nhận đăng ký phải sau ngày bắt đầu học kỳ.')
+      if (own.rows[0].ends_on && cDate >= semEndStartOfDay) ctx.throw(400, 'Ngày đóng nhận đăng ký phải trước ngày kết thúc học kỳ.')
       topicOpensAt = new Date(opensAt).toISOString()
       topicClosesAt = new Date(closesAt).toISOString()
     }
@@ -241,7 +245,9 @@ app.use(async (ctx) => {
   const lecturerTopics = ctx.path.match(/^\/internal\/v1\/academic\/lecturers\/([0-9a-f-]+)\/topics$/i)
   if (ctx.method === 'GET' && lecturerTopics) {
     const topics = (await pool.query(`SELECT t.id,t.code,t.title,t.description,t.published,t.opens_at,t.closes_at,t.capacity,
-      (SELECT string_agg(r.code, ', ' ORDER BY r.opens_at) FROM academic.topic_round_windows w JOIN academic.rounds r ON r.id=w.round_id WHERE w.topic_id=t.id) AS round_codes
+      (SELECT string_agg(r.code, ', ' ORDER BY r.opens_at) FROM academic.topic_round_windows w JOIN academic.rounds r ON r.id=w.round_id WHERE w.topic_id=t.id) AS round_codes,
+      (SELECT s.starts_on FROM academic.topic_round_windows w JOIN academic.rounds r ON r.id=w.round_id JOIN academic.semesters s ON s.id=r.semester_id WHERE w.topic_id=t.id LIMIT 1) AS semester_start,
+      (SELECT s.ends_on FROM academic.topic_round_windows w JOIN academic.rounds r ON r.id=w.round_id JOIN academic.semesters s ON s.id=r.semester_id WHERE w.topic_id=t.id LIMIT 1) AS semester_end
       FROM academic.topics t WHERE t.lecturer_id=$1 ORDER BY t.created_at DESC`, [lecturerTopics[1]])).rows
     ctx.body = topics
     return
