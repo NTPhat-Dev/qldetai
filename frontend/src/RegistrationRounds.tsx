@@ -4,7 +4,14 @@ import { fetchWithTimeout as fetch } from './api'
 
 type Round = { id: string; code: string; opens_at: string; closes_at: string; is_open: boolean; window_state: 'CLOSED'|'SCHEDULED'|'EXPIRED'|'OPEN'; semester_code: string; semester_name: string; semester_start: string; semester_end: string }
 const API = '/api/admin'
-const displayDate = (value: string) => new Date(value).toLocaleDateString('vi-VN')
+const displayDate = (value?: string) => {
+  if (!value) return '—'
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+    const [y, m, d] = value.slice(0, 10).split('-')
+    return `${d}/${m}/${y}`
+  }
+  return new Date(value).toLocaleDateString('vi-VN')
+}
 const stateName = { CLOSED: 'Đã đóng thủ công', SCHEDULED: 'Chưa đến giờ mở', EXPIRED: 'Đã hết hạn', OPEN: 'Đang nhận đăng ký' } as const
 
 export default function RegistrationRounds({ token }: { token: string }) {
