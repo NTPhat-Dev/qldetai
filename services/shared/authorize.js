@@ -3,7 +3,8 @@ import jwt from 'jsonwebtoken'
 export async function authorize(ctx, roles, fetch) {
   let claims
   try {
-    claims = jwt.verify(ctx.get('authorization').replace(/^Bearer\s+/i, ''), process.env.JWT_SECRET, { algorithms: ['HS256'] })
+    const identityPublicKey = Buffer.from(process.env.INTERNAL_PUBLIC_IDENTITY ?? '', 'base64').toString('utf8')
+    claims = jwt.verify(ctx.get('authorization').replace(/^Bearer\s+/i, ''), identityPublicKey, { algorithms: ['RS256'] })
     if (claims.mfaPending || claims.purpose || typeof claims.sub !== 'string') throw new Error('Pending authentication')
   } catch { ctx.throw(401, 'Phiên đăng nhập hết hạn hoặc không hợp lệ.') }
   if (claims.mustChangePassword || !roles.includes(claims.role)) ctx.throw(403, 'Bạn không có quyền thực hiện thao tác này.')

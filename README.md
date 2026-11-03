@@ -16,11 +16,11 @@ Cài Docker Engine kèm Compose plugin, Git và OpenSSL; cho tài khoản đang 
 bash start-server.sh
 ```
 
-Lần chạy đầu tạo `.env` ngẫu nhiên, dựng ba PostgreSQL và các dịch vụ, khởi tạo schema, tạo quản trị viên nếu chưa có và in mật khẩu tạm một lần. Lần sau chạy lại lệnh đó để nâng cấp image và tiếp tục dùng các volume hiện có. Máy ảo VirtualBox với NAT muốn mở trên máy chủ Windows có thể đặt địa chỉ trình duyệt trước lần khởi tạo, ví dụ `APP_ORIGIN=http://localhost:5174 bash start-server.sh`, rồi cấu hình chuyển tiếp cổng host `5174` tới guest `5173`. Điện thoại hoặc máy khác cần một đường mạng tới máy ảo hoặc cổng chuyển tiếp trên host; NAT và firewall có thể phải cấu hình thêm.
+Lần chạy đầu tạo `.env` và bốn cặp khóa dịch vụ ngẫu nhiên, dựng ba PostgreSQL và các dịch vụ, khởi tạo schema, tạo quản trị viên nếu chưa có và in mật khẩu tạm một lần. Lần sau chạy lại lệnh đó để nâng cấp image và tiếp tục dùng các volume hiện có. Web mặc định chỉ nhận kết nối từ chính Ubuntu Server. Để mở từ điện thoại hoặc máy khác, cấu hình reverse proxy HTTPS theo `docs/SECURITY.md`; không chuyển tiếp trực tiếp cổng HTTP của ứng dụng qua VirtualBox NAT.
 
 ## Địa chỉ và dữ liệu
 
-Web: `http://localhost:5173` (hoặc cổng `WEB_PORT` trong `.env`); quản trị: `/admin`; sinh viên và giảng viên: `/login`. Cổng web là cổng công khai duy nhất. API và PostgreSQL chỉ ở mạng Docker nội bộ.
+Web trên chính máy chạy Docker: `http://localhost:5173` (hoặc cổng `WEB_PORT` trong `.env`); quản trị: `/admin`; sinh viên và giảng viên: `/login`. Mặc định cổng web chỉ gắn với `127.0.0.1`; API và PostgreSQL chỉ ở mạng Docker nội bộ. Nếu cần truy cập từ mạng khác, dùng HTTPS ở lớp reverse proxy và cấu hình `WEBAUTHN_ORIGIN`, `WEBAUTHN_RP_ID` đúng tên miền.
 
 Identity, Academic và Registration có PostgreSQL container, database và volume riêng. Schema được tạo trên volume mới và nâng cấp bằng migration khi ứng dụng khởi động với volume cũ. Khởi động lại, build lại image hoặc clone code không xóa volume. **Không chạy `docker compose down -v` khi cần giữ dữ liệu.** Sao lưu các volume trước khi nâng cấp môi trường có dữ liệu thật.
 
@@ -29,3 +29,5 @@ Identity, Academic và Registration có PostgreSQL container, database và volum
 `docs/VERIFICATION.md` ghi các lệnh kiểm thử và giới hạn của kiểm thử chịu lỗi. Bộ kiểm thử tích hợp tạo một Compose project và ba volume ngẫu nhiên riêng, rồi chỉ dọn project kiểm thử đó. Không chạy thử ngắt database trên môi trường demo có dữ liệu cần giữ.
 
 Kiến trúc và mức bảo đảm SOA: `docs/SOA_ARCHITECTURE.md`.
+
+Các biện pháp bảo mật, cách triển khai HTTPS và giới hạn còn lại: `docs/SECURITY.md`.

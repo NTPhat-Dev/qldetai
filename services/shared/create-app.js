@@ -1,5 +1,4 @@
 import Koa from 'koa'
-import cors from '@koa/cors'
 import { bodyParser } from '@koa/bodyparser'
 import { verifyServiceToken } from './service-client.js'
 
@@ -26,7 +25,6 @@ export function createApp({ name, pool = null, readiness = null }) {
       if (status >= 500) console.error(`[${name}] request failed:`, error)
     }
   })
-  app.use(cors())
   app.use(bodyParser())
   app.use(async (ctx, next) => {
     if (ctx.path.startsWith('/internal/')) {

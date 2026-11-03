@@ -33,24 +33,38 @@ if [[ ! -f .env ]]; then
   cat > .env <<EOF
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 WEB_PORT=5173
-JWT_SECRET=$(openssl rand -hex 48)
+WEB_BIND=127.0.0.1
 TOTP_ENCRYPTION_KEY=$(openssl rand -hex 32)
-INTERNAL_SERVICE_SECRET=$(openssl rand -hex 48)
 WEBAUTHN_RP_ID=$rp_host
 WEBAUTHN_ORIGIN=$server_origin
 EOF
   printf 'Da tao cau hinh .env voi khoa ngau nhien.\n'
 fi
 # Never rotate stored DB passwords or TOTP encryption keys on an existing installation.
-for key in POSTGRES_PASSWORD JWT_SECRET TOTP_ENCRYPTION_KEY; do
+for key in POSTGRES_PASSWORD TOTP_ENCRYPTION_KEY; do
   if ! grep -Eq "^${key}=.+" .env; then
     printf 'Cau hinh .env thieu %s. Khoi phuc cau hinh truoc khi khoi dong.\n' "$key" >&2
     exit 1
   fi
 done
-if ! grep -Eq '^INTERNAL_SERVICE_SECRET=.+' .env; then
-  printf '\nINTERNAL_SERVICE_SECRET=%s\n' "$(openssl rand -hex 48)" >> .env
-fi
+set_env_value() {
+  if grep -q "^$1=" .env; then
+    sed -i "s|^$1=.*|$1=$2|" .env
+  else
+    printf '%s=%s\n' "$1" "$2" >> .env
+  fi
+}
+for service in IDENTITY ACADEMIC REGISTRATION GATEWAY; do
+  private_name="INTERNAL_${service}_PRIVATE_KEY"
+  public_name="INTERNAL_${service}_PUBLIC_KEY"
+  if ! grep -Eq "^${private_name}=.+" .env || ! grep -Eq "^${public_name}=.+" .env; then
+    private_pem="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
+    public_pem="$(printf '%s\n' "$private_pem" | openssl pkey -pubout 2>/dev/null)"
+    set_env_value "$private_name" "$(printf '%s\n' "$private_pem" | openssl base64 -A)"
+    set_env_value "$public_name" "$(printf '%s\n' "$public_pem" | openssl base64 -A)"
+    unset private_pem public_pem
+  fi
+done
 chmod 600 .env
 
 printf 'Dang dung va khoi dong cac dich vu...\n'
@@ -67,5 +81,10 @@ else
 fi
 unset temporary_password admin_result
 web_port="$(sed -n 's/^WEB_PORT=//p' .env | tail -n 1 | tr -d '\r')"
-printf '\nWeb: http://<IP-server>:%s\nQuan tri: http://<IP-server>:%s/admin\n' "${web_port:-5173}" "${web_port:-5173}"
-printf 'Qua NAT VirtualBox: dung IP may Windows va Host Port da cau hinh (vi du 5174).\n'
+web_bind="$(sed -n 's/^WEB_BIND=//p' .env | tail -n 1 | tr -d '\r')"
+printf '\nWeb cuc bo: http://localhost:%s\nQuan tri: http://localhost:%s/admin\n' "${web_port:-5173}" "${web_port:-5173}"
+if [[ "${web_bind:-127.0.0.1}" != '127.0.0.1' && "${web_bind:-127.0.0.1}" != '::1' ]]; then
+  printf 'WEB_BIND dang mo cho mang. Chi cho phep truy cap tu xa qua HTTPS va chan truy cap HTTP truc tiep bang firewall.\n'
+else
+  printf 'Truy cap tu dien thoai/may khac can reverse proxy HTTPS; xem docs/SECURITY.md.\n'
+fi

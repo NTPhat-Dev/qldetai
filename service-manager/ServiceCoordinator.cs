@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -147,9 +148,8 @@ internal sealed class ServiceCoordinator
         var changed = created;
 
         ReplacePlaceholder("POSTGRES_PASSWORD", 30);
-        ReplacePlaceholder("JWT_SECRET", 48);
         ReplacePlaceholder("TOTP_ENCRYPTION_KEY", 48);
-        ReplacePlaceholder("INTERNAL_SERVICE_SECRET", 48);
+        foreach (var service in new[] { "IDENTITY", "ACADEMIC", "REGISTRATION", "GATEWAY" }) EnsureServiceKeyPair(service);
 
         if (changed) File.WriteAllText(envPath, content, new System.Text.UTF8Encoding(false));
         return changed;
@@ -163,6 +163,30 @@ internal sealed class ServiceCoordinator
             var value = Convert.ToBase64String(RandomNumberGenerator.GetBytes(bytes)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
             content = match.Success
                 ? Regex.Replace(content, $"^{Regex.Escape(name)}=.*$", $"{name}={value}", RegexOptions.Multiline)
+                : content.TrimEnd() + Environment.NewLine + $"{name}={value}" + Environment.NewLine;
+            changed = true;
+        }
+
+        void EnsureServiceKeyPair(string service)
+        {
+            var privateName = $"INTERNAL_{service}_PRIVATE_KEY";
+            var publicName = $"INTERNAL_{service}_PUBLIC_KEY";
+            var privateValue = ReadValue(privateName);
+            var publicValue = ReadValue(publicName);
+            if (!string.IsNullOrWhiteSpace(privateValue) && !string.IsNullOrWhiteSpace(publicValue)) return;
+            using var rsa = RSA.Create(2048);
+            WriteValue(privateName, Convert.ToBase64String(Encoding.UTF8.GetBytes(rsa.ExportPkcs8PrivateKeyPem())));
+            WriteValue(publicName, Convert.ToBase64String(Encoding.UTF8.GetBytes(rsa.ExportSubjectPublicKeyInfoPem())));
+        }
+
+        string? ReadValue(string name) => Regex.Match(content, $"^{Regex.Escape(name)}=(.*)$", RegexOptions.Multiline) is var match && match.Success
+            ? match.Groups[1].Value.Trim() : null;
+
+        void WriteValue(string name, string value)
+        {
+            var pattern = $"^{Regex.Escape(name)}=.*$";
+            content = Regex.IsMatch(content, pattern, RegexOptions.Multiline)
+                ? Regex.Replace(content, pattern, $"{name}={value}", RegexOptions.Multiline)
                 : content.TrimEnd() + Environment.NewLine + $"{name}={value}" + Environment.NewLine;
             changed = true;
         }
@@ -463,7 +487,8 @@ internal sealed class ServiceCoordinator
 
     private string Redact(string message)
     {
-        foreach (var key in new[] { "POSTGRES_PASSWORD", "JWT_SECRET", "TOTP_ENCRYPTION_KEY", "INTERNAL_SERVICE_SECRET" })
+        foreach (var key in new[] { "POSTGRES_PASSWORD", "JWT_SECRET", "TOTP_ENCRYPTION_KEY", "INTERNAL_SERVICE_SECRET",
+            "INTERNAL_IDENTITY_PRIVATE_KEY", "INTERNAL_ACADEMIC_PRIVATE_KEY", "INTERNAL_REGISTRATION_PRIVATE_KEY", "INTERNAL_GATEWAY_PRIVATE_KEY" })
         {
             var value = ReadEnvValue(key);
             if (!string.IsNullOrWhiteSpace(value)) message = message.Replace(value, "[đã ẩn]", StringComparison.Ordinal);

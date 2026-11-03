@@ -5,4 +5,5 @@ RUN npm ci --no-audit --no-fund
 COPY services/shared ./shared
 COPY services/registration/src ./registration/src
 EXPOSE 3103
+USER node
 CMD ["node", "registration/src/index.js"]

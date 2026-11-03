@@ -7,4 +7,5 @@ COPY services/identity/src ./identity/src
 COPY services/identity/scripts ./scripts
 COPY services/migrate-legacy.js ./migrate-legacy.js
 EXPOSE 3101
+USER node
 CMD ["node", "identity/src/index.js"]

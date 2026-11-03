@@ -13,7 +13,7 @@ internal static class Program
         try
         {
             File.WriteAllText(Path.Combine(root, "compose.yaml"), "services: {}\n");
-            File.WriteAllText(Path.Combine(root, ".env.docker.example"), "POSTGRES_PASSWORD=local-test\nJWT_SECRET=local-test\nTOTP_ENCRYPTION_KEY=local-test\nWEB_PORT=65520\n");
+            File.WriteAllText(Path.Combine(root, ".env.docker.example"), "POSTGRES_PASSWORD=local-test\nTOTP_ENCRYPTION_KEY=local-test\nWEB_PORT=65520\n");
             CheckCoordinatorAsync(root).GetAwaiter().GetResult();
             if (args.Contains("--render")) Render(root);
             Console.WriteLine($"PASS: {_checks} service-manager checks");
@@ -47,11 +47,13 @@ internal static class Program
         var coordinator = new ServiceCoordinator(root, Run);
         var envPath = Path.Combine(root, ".env");
         var env = File.ReadAllText(envPath);
-        Assert(env.Contains("INTERNAL_SERVICE_SECRET="), "Generate missing internal service secret");
+        Assert(env.Contains("INTERNAL_IDENTITY_PRIVATE_KEY=") && env.Contains("INTERNAL_IDENTITY_PUBLIC_KEY=")
+            && env.Contains("INTERNAL_ACADEMIC_PRIVATE_KEY=") && env.Contains("INTERNAL_REGISTRATION_PRIVATE_KEY=")
+            && env.Contains("INTERNAL_GATEWAY_PRIVATE_KEY="), "Generate distinct service key pairs");
         Assert(!env.Contains("local-test"), "Generate unique first-launch secrets");
         _ = new ServiceCoordinator(root, Run);
         Assert(File.ReadAllText(envPath) == env, "Preserve configured secrets on next launch");
-        secret = env.Split('\n').Single(line => line.StartsWith("INTERNAL_SERVICE_SECRET="))["INTERNAL_SERVICE_SECRET=".Length..].Trim();
+        secret = env.Split('\n').Single(line => line.StartsWith("INTERNAL_IDENTITY_PRIVATE_KEY="))["INTERNAL_IDENTITY_PRIVATE_KEY=".Length..].Trim();
         Assert(coordinator.WebHostPort == "65520", "Read configured web port");
         var statuses = await coordinator.GetServiceStatusesAsync(default);
         Assert(statuses.Count == 8 && statuses.All(service => service.Running && service.Health == "healthy"), "Parse JSON-lines status output");

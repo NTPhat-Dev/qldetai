@@ -1,7 +1,7 @@
 // Real integration tests. Every Docker mutation is scoped to a new disposable project.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { randomBytes, randomUUID, createHmac } from 'node:crypto'
+import { randomBytes, randomUUID, createHmac, createSign, generateKeyPairSync } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
@@ -17,11 +17,14 @@ const port = await new Promise((resolve, reject) => {
     listener.close(() => resolve(port))
   })
 })
-const jwtSecret = randomBytes(48).toString('hex')
+const serviceKeys = Object.fromEntries(['identity','academic','registration','gateway'].flatMap((service) => {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } })
+  return [[`INTERNAL_${service.toUpperCase()}_PRIVATE_KEY`, Buffer.from(privateKey).toString('base64')], [`INTERNAL_${service.toUpperCase()}_PUBLIC_KEY`, Buffer.from(publicKey).toString('base64')]]
+}))
 const env = {
   ...process.env, WEB_PORT: String(port), POSTGRES_PASSWORD: randomBytes(24).toString('hex'),
-  JWT_SECRET: jwtSecret, TOTP_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
-  INTERNAL_SERVICE_SECRET: randomBytes(48).toString('hex'),
+  TOTP_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+  ...serviceKeys,
   WEBAUTHN_RP_ID: 'localhost', WEBAUTHN_ORIGIN: `http://localhost:${port}`,
 }
 const base = `http://127.0.0.1:${port}`
@@ -130,7 +133,9 @@ const register = (student, target, requestId = randomUUID(), reason = 'Integrati
 function alteredToken(token, patch) {
   const [header, payload] = token.split('.')
   const changed = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload, 'base64url')), ...patch })).toString('base64url')
-  const signature = createHmac('sha256', jwtSecret).update(`${header}.${changed}`).digest('base64url')
+  const signer = createSign('RSA-SHA256')
+  signer.update(`${header}.${changed}`)
+  const signature = signer.sign(Buffer.from(serviceKeys.INTERNAL_IDENTITY_PRIVATE_KEY, 'base64')).toString('base64url')
   return `${header}.${changed}.${signature}`
 }
 
@@ -285,6 +290,10 @@ try {
     const recoveryChallenge = expect(await call('/api/auth/login', { method: 'POST', body: { username: student.username, password } }), 200, 'second MFA challenge')
     expect(await call('/api/auth/mfa/totp', { method: 'POST', token: recoveryChallenge.mfaToken, body: { code: confirmed.recoveryCodes[0] } }), 200, 'recovery code works once')
     expect(await call('/api/auth/mfa/totp', { method: 'POST', token: recoveryChallenge.mfaToken, body: { code: confirmed.recoveryCodes[0] } }), 401, 'recovery code cannot be reused')
+    const invalidCodes = []
+    for (let attempt = 0; attempt < 6; attempt++) invalidCodes.push(await call('/api/auth/mfa/totp', { method: 'POST', token: recoveryChallenge.mfaToken, body: { code: 'invalid' } }))
+    assert.equal(invalidCodes.filter((response) => response.status === 401).length, 5, 'MFA rejects wrong codes')
+    assert.equal(invalidCodes.at(-1).status, 429, 'MFA attempts are throttled')
     expect(await call('/api/portal/security/totp/disable', { token: verified.token, method: 'POST', body: { currentPassword: password, code: totpCode(setup.secret) } }), 200, 'disable TOTP')
     const after = expect(await call('/api/auth/login', { method: 'POST', body: { username: student.username, password } }), 200, 'login after removing TOTP')
     assert.equal(after.mfaRequired, undefined)
@@ -296,6 +305,36 @@ try {
     expect(await call('/api/admin/overview', { token: fixtures.admin.token }), 200, 'admin session and data survive service restart')
     assert.equal(await sql('registration-db', 'registration', 'SELECT count(*) FROM registration.registrations'), before, 'registration volume persists')
     assert.equal(await sql('identity-db', 'identity', "SELECT count(*) FROM information_schema.columns WHERE table_schema='identity' AND table_name='users' AND column_name='token_version'"), '1', 'identity migration remains applied')
+  })
+  await check('Security headers, login throttling and service isolation', async () => {
+    const page = await fetch(`${base}/`)
+    assert.ok(page.headers.get('content-security-policy')?.includes("frame-ancestors 'none'"), 'CSP blocks framing')
+    assert.equal(page.headers.get('x-frame-options'), 'DENY')
+    assert.equal(page.headers.get('x-content-type-options'), 'nosniff')
+    assert.equal(page.headers.get('cache-control'), 'no-store')
+    const preflight = await fetch(`${base}/api/auth/login`, { method: 'OPTIONS', headers: { Origin: 'https://evil.example', 'Access-Control-Request-Method': 'POST' } })
+    assert.equal(preflight.headers.get('access-control-allow-origin'), null, 'No wildcard CORS')
+    const uid = (await run(['exec', '-T', 'identity-service', 'id', '-u'])).trim()
+    assert.notEqual(uid, '0', 'Identity must run without root privileges')
+    const impersonation = await run(['exec', '-T', 'api-gateway', 'node', '--input-type=module', '-'], `import jwt from 'jsonwebtoken'; const key=Buffer.from(process.env.INTERNAL_PRIVATE_KEY,'base64').toString('utf8'); const token=jwt.sign({service:'academic',purpose:'service-call'},key,{audience:'qldetai-services',expiresIn:'1m',algorithm:'RS256'}); const response=await fetch('http://registration-service:3103/internal/v1/registrations/admission/rounds/00000000-0000-4000-8000-000000000001',{method:'POST',headers:{'x-service-token':token,'content-type':'application/json'},body:'{"closed":false}'}); console.log(response.status)`)
+    assert.equal(impersonation.trim(), '401', 'Gateway cannot impersonate Academic')
+    const forged = `${Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify({ sub: fixtures.admin.id, role: 'QUAN_TRI' })).toString('base64url')}.`
+    expect(await call('/api/admin/overview', { token: forged }), 401, 'unsigned JWT is rejected')
+    const tampered = `${fixtures.admin.token.slice(0, -4)}AAAA`
+    expect(await call('/api/admin/overview', { token: tampered }), 401, 'tampered JWT is rejected')
+    expect(await call('/api/auth/login', { method: 'POST', body: { username: "' OR 1=1 --", password: 'irrelevant' } }), 401, 'SQL injection is not interpreted as a query')
+    const wrong = []
+    for (let attempt = 0; attempt < 9; attempt++) {
+      const response = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Real-IP': `198.51.100.${attempt + 1}` }, body: JSON.stringify({ username: 'security-probe', password: 'wrong-password' }) })
+      wrong.push(response.status)
+      if (attempt === 8) assert.ok(Number(response.headers.get('retry-after')) > 0, 'Throttling tells the client when to retry')
+    }
+    assert.equal(wrong.filter((status) => status === 429).length, 1, 'Forged client IP does not bypass throttling')
+    assert.equal(wrong.filter((status) => status === 401).length, 8)
+    const recheck = []
+    for (let attempt = 0; attempt < 9; attempt++) recheck.push(await call('/api/portal/security/totp/setup', { token: fixtures.students[11].token, method: 'POST', body: { currentPassword: 'wrong-password' } }))
+    assert.equal(recheck.filter((response) => response.status === 403).length, 8, 'Password recheck rejects wrong values')
+    assert.equal(recheck.at(-1).status, 429, 'Password recheck attempts are throttled')
   })
 } catch (error) {
   failed = true

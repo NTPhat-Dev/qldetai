@@ -5,4 +5,5 @@ RUN npm ci --no-audit --no-fund
 COPY services/shared ./shared
 COPY services/gateway/src ./gateway/src
 EXPOSE 3100
+USER node
 CMD ["node", "gateway/src/index.js"]

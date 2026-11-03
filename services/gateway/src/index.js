@@ -38,6 +38,7 @@ app.use(async (ctx) => {
 
   const headers = new Headers()
   for (const name of ['authorization','content-type','x-request-id']) if (ctx.get(name)) headers.set(name, ctx.get(name))
+  headers.set('x-real-ip', ctx.get('x-real-ip') || ctx.ip)
   try {
     const response = await globalThis.fetch(`${target}${ctx.path}${ctx.querystring ? `?${ctx.querystring}` : ''}`, {
       method: ctx.method, headers, signal: AbortSignal.timeout(10000),

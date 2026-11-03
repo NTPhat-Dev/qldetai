@@ -6,6 +6,9 @@ export async function migrate(pool, service) {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`qldetai-migrate-${service}`])
     if (service === 'identity') {
       await client.query('ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0')
+      await client.query(`CREATE TABLE IF NOT EXISTS identity.auth_rate_limits (
+        bucket text PRIMARY KEY, attempts integer NOT NULL, window_started_at timestamptz NOT NULL)`)
+      await client.query('CREATE INDEX IF NOT EXISTS auth_rate_limits_window_idx ON identity.auth_rate_limits(window_started_at)')
       await client.query(`CREATE TABLE IF NOT EXISTS identity.security_events (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, user_id uuid, actor_id uuid,
         action text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`)

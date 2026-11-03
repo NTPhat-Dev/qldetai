@@ -5,4 +5,5 @@ RUN npm ci --no-audit --no-fund
 COPY services/shared ./shared
 COPY services/academic/src ./academic/src
 EXPOSE 3102
+USER node
 CMD ["node", "academic/src/index.js"]

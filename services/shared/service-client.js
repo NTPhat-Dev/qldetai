@@ -1,11 +1,21 @@
 import jwt from 'jsonwebtoken'
 
 const serviceNames = new Set(['identity', 'academic', 'registration', 'gateway'])
-const internalSecret = () => process.env.INTERNAL_SERVICE_SECRET || `${process.env.JWT_SECRET}:internal-v1`
+const privateKey = () => {
+  if (!process.env.INTERNAL_PRIVATE_KEY) throw new Error('Missing service private key')
+  return Buffer.from(process.env.INTERNAL_PRIVATE_KEY, 'base64').toString('utf8')
+}
+const publicKey = (service) => {
+  const encoded = process.env[`INTERNAL_PUBLIC_${service.toUpperCase()}`]
+  if (!encoded) throw new Error(`Missing ${service} public key`)
+  return Buffer.from(encoded, 'base64').toString('utf8')
+}
 
 export function verifyServiceToken(token) {
-  const claims = jwt.verify(token, internalSecret(), { audience: 'qldetai-services', algorithms: ['HS256'] })
-  if (claims.purpose !== 'service-call' || !serviceNames.has(claims.service)) throw new Error('Invalid service credentials')
+  const untrusted = jwt.decode(token)
+  if (!untrusted || !serviceNames.has(untrusted.service)) throw new Error('Invalid service credentials')
+  const claims = jwt.verify(token, publicKey(untrusted.service), { audience: 'qldetai-services', algorithms: ['RS256'] })
+  if (claims.purpose !== 'service-call' || claims.service !== untrusted.service) throw new Error('Invalid service credentials')
   return claims
 }
 
@@ -15,7 +25,7 @@ export function createServiceFetch(service) {
   return async (url, options = {}) => {
     const headers = new Headers(options.headers)
     if (new URL(url).pathname.startsWith('/internal/')) {
-      headers.set('x-service-token', jwt.sign({ service, purpose: 'service-call' }, internalSecret(), { audience: 'qldetai-services', expiresIn: '1m', algorithm: 'HS256' }))
+      headers.set('x-service-token', jwt.sign({ service, purpose: 'service-call' }, privateKey(), { audience: 'qldetai-services', expiresIn: '1m', algorithm: 'RS256' }))
     }
     try {
       const response = await globalThis.fetch(url, { ...options, headers, signal: options.signal ?? AbortSignal.timeout(4000) })

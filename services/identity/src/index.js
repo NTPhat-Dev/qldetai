@@ -13,15 +13,17 @@ const pool = createDatabasePool('identity')
 await migrate(pool, 'identity')
 const fetch = createServiceFetch('identity')
 const app = createApp({ name: 'identity', pool })
-const jwtSecret = process.env.JWT_SECRET
+const identityPrivateKey = Buffer.from(process.env.INTERNAL_PRIVATE_KEY ?? '', 'base64').toString('utf8')
+const identityPublicKey = Buffer.from(process.env.INTERNAL_PUBLIC_IDENTITY ?? '', 'base64').toString('utf8')
 const webauthnRPID = process.env.WEBAUTHN_RP_ID || 'localhost'
 const webauthnOrigin = process.env.WEBAUTHN_ORIGIN || 'http://localhost:5173'
 const hashPassword = (password) => argon2.hash(password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1, hashLength: 32, salt: randomBytes(16) })
+const dummyPasswordHash = await hashPassword(randomBytes(24).toString('base64url'))
 const verifyPassword = async (password, hash) => hash?.startsWith('$argon2id$')
   ? { valid: await argon2.verify(hash, password), needsUpgrade: false }
   : { valid: await bcrypt.compare(password, hash ?? ''), needsUpgrade: true }
-const signToken = (user, overrides = {}) => jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, tokenVersion: user.token_version ?? 0, ...overrides }, jwtSecret, { expiresIn: '8h' })
-const encryptionKey = () => createHash('sha256').update(process.env.TOTP_ENCRYPTION_KEY || `${jwtSecret}:qldetai-totp-v1`).digest()
+const signToken = (user, overrides = {}) => jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, tokenVersion: user.token_version ?? 0, ...overrides }, identityPrivateKey, { expiresIn: '8h', algorithm: 'RS256' })
+const encryptionKey = () => createHash('sha256').update(process.env.TOTP_ENCRYPTION_KEY).digest()
 function encryptSecret(secret) {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', encryptionKey(), iv)
@@ -35,11 +37,42 @@ function decryptSecret(value) {
   return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8')
 }
 const checkTotp = (secret, token) => new OTPAuth.TOTP({ issuer: 'QL Đề Tài', label: 'Tài khoản', algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(secret) }).validate({ token, window: 1 }) !== null
+const clientIp = (ctx) => {
+  const forwarded = ctx.get('x-real-ip')
+  return /^[0-9a-f:.]{3,45}$/i.test(forwarded) ? forwarded : ctx.ip
+}
+const bucket = (kind, value) => createHash('sha256').update(`${kind}\0${value}`).digest('hex')
+async function reserveAttempt(ctx, kind, subject, limit) {
+  const key = bucket(kind, subject)
+  const result = await pool.query(`INSERT INTO identity.auth_rate_limits(bucket,attempts,window_started_at)
+    VALUES($1,1,clock_timestamp()) ON CONFLICT(bucket) DO UPDATE SET
+    attempts=CASE WHEN identity.auth_rate_limits.window_started_at < clock_timestamp()-interval '5 minutes'
+      THEN 1 ELSE identity.auth_rate_limits.attempts+1 END,
+    window_started_at=CASE WHEN identity.auth_rate_limits.window_started_at < clock_timestamp()-interval '5 minutes'
+      THEN clock_timestamp() ELSE identity.auth_rate_limits.window_started_at END
+    RETURNING attempts, GREATEST(1,CEIL(EXTRACT(EPOCH FROM (window_started_at+interval '5 minutes'-clock_timestamp()))))::integer AS retry_after`, [key])
+  if (result.rows[0].attempts > limit) {
+    ctx.set('Retry-After', String(result.rows[0].retry_after))
+    ctx.throw(429, 'Đã thử quá nhiều lần. Vui lòng chờ rồi thử lại.')
+  }
+  return key
+}
+const clearAttempt = (key) => pool.query('DELETE FROM identity.auth_rate_limits WHERE bucket=$1', [key])
+async function requireCurrentPassword(ctx, userId, password, errorMessage) {
+  const key = await reserveAttempt(ctx, 'password-recheck', `${userId}:${clientIp(ctx)}`, 8)
+  const result = await pool.query('SELECT username,display_name,password_hash FROM identity.users WHERE id=$1', [userId])
+  let valid = false
+  try { valid = Boolean(result.rowCount && (await verifyPassword(password ?? '', result.rows[0].password_hash)).valid) } catch {}
+  if (!valid) ctx.throw(403, errorMessage)
+  await clearAttempt(key)
+  return result.rows[0]
+}
+await pool.query("DELETE FROM identity.auth_rate_limits WHERE window_started_at < clock_timestamp()-interval '1 day'")
 
 async function verifyBearer(ctx, { allowPending = false } = {}) {
   let claims
   try {
-    claims = jwt.verify(ctx.get('authorization').replace(/^Bearer\s+/i, ''), jwtSecret, { algorithms: ['HS256'] })
+    claims = jwt.verify(ctx.get('authorization').replace(/^Bearer\s+/i, ''), identityPublicKey, { algorithms: ['RS256'] })
     if ((!allowPending && claims.mfaPending) || claims.purpose || typeof claims.sub !== 'string') throw new Error('pending')
   } catch { ctx.throw(401, 'Phiên đăng nhập hết hạn hoặc không hợp lệ.') }
   const current = await pool.query('SELECT role,status,must_change_password,token_version FROM identity.users WHERE id=$1', [claims.sub])
@@ -52,15 +85,18 @@ app.use(async (ctx, next) => {
   if (ctx.method === 'POST' && ctx.path === '/api/auth/login') {
     const { username, password } = ctx.request.body ?? {}
     if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password || username.length>120 || password.length>1024) ctx.throw(400, 'Vui lòng nhập tên đăng nhập và mật khẩu.')
+    await reserveAttempt(ctx, 'login-ip', clientIp(ctx), 100)
+    const loginBucket = await reserveAttempt(ctx, 'login-account-ip', `${username.trim().toLowerCase()}:${clientIp(ctx)}`, 8)
     const result = await pool.query('SELECT id,username,password_hash,role,status,must_change_password,display_name,token_version FROM identity.users WHERE username=lower(btrim($1)) LIMIT 1', [username])
     const user = result.rows[0]
     let checked = { valid: false, needsUpgrade: false }
-    try { if (user?.password_hash) checked = await verifyPassword(password, user.password_hash) } catch { checked = { valid: false, needsUpgrade: false } }
+    try { checked = await verifyPassword(password, user?.password_hash ?? dummyPasswordHash) } catch { checked = { valid: false, needsUpgrade: false } }
     if (!user || user.status !== 'HOAT_DONG' || !checked.valid) ctx.throw(401, 'Sai tên đăng nhập hoặc mật khẩu.')
+    await clearAttempt(loginBucket)
     if (checked.needsUpgrade) await pool.query('UPDATE identity.users SET password_hash=$1,updated_at=now() WHERE id=$2', [await hashPassword(password), user.id])
     const factors = await pool.query('SELECT EXISTS(SELECT 1 FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL) AS totp, EXISTS(SELECT 1 FROM identity.passkeys WHERE user_id=$1) AS passkey', [user.id])
     if (factors.rows[0].totp || factors.rows[0].passkey) {
-      ctx.body = { mfaRequired: true, role: user.role, methods: factors.rows[0], mfaToken: jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, tokenVersion: user.token_version, mfaPending: true }, jwtSecret, { expiresIn: '5m' }) }
+      ctx.body = { mfaRequired: true, role: user.role, methods: factors.rows[0], mfaToken: jwt.sign({ sub: user.id, role: user.role, mustChangePassword: user.must_change_password, tokenVersion: user.token_version, mfaPending: true }, identityPrivateKey, { expiresIn: '5m', algorithm: 'RS256' }) }
     } else ctx.body = { token: signToken(user), role: user.role, mustChangePassword: user.must_change_password, user: { id: user.id, name: user.display_name, username: user.username } }
     return
   }
@@ -72,9 +108,11 @@ app.use(async (ctx, next) => {
       const result = await pool.query('SELECT password_hash,must_change_password FROM identity.users WHERE id=$1', [claims.sub])
       if (!result.rowCount) ctx.throw(401, 'Tài khoản không còn tồn tại.')
       if (!claims.mustChangePassword || !result.rows[0].must_change_password) {
+        const passwordBucket = await reserveAttempt(ctx, 'password-change', `${claims.sub}:${clientIp(ctx)}`, 8)
         if (!currentPassword) ctx.throw(400, 'Vui lòng nhập mật khẩu hiện tại.')
         const checked = result.rowCount ? await verifyPassword(currentPassword, result.rows[0].password_hash) : { valid: false }
         if (!checked.valid) ctx.throw(400, 'Mật khẩu hiện tại không chính xác.')
+        await clearAttempt(passwordBucket)
       }
       const updated = await pool.query(`WITH updated AS (UPDATE identity.users SET password_hash=$1,must_change_password=false,token_version=token_version+1,updated_at=now() WHERE id=$2 RETURNING *)
         , audit AS (INSERT INTO identity.security_events(user_id,actor_id,action) SELECT id,id,'PASSWORD_CHANGED' FROM updated)
@@ -85,6 +123,7 @@ app.use(async (ctx, next) => {
     if (ctx.method === 'POST' && ctx.path === '/api/auth/mfa/totp') {
       const claims = await verifyBearer(ctx, { allowPending: true })
       if (!claims.mfaPending) ctx.throw(401, 'Phiên xác thực hai lớp đã hết hạn.')
+      const mfaBucket = await reserveAttempt(ctx, 'mfa-totp', `${claims.sub}:${clientIp(ctx)}`, 6)
       const { code } = ctx.request.body ?? {}
       const factor = await pool.query('SELECT encrypted_secret FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL', [claims.sub])
       let valid = Boolean(factor.rowCount && /^\d{6}$/.test(String(code ?? '')) && checkTotp(decryptSecret(factor.rows[0].encrypted_secret), String(code)))
@@ -93,6 +132,7 @@ app.use(async (ctx, next) => {
         valid = Boolean((await pool.query('UPDATE identity.recovery_codes SET used_at=now() WHERE user_id=$1 AND code_hash=$2 AND used_at IS NULL RETURNING id', [claims.sub, hash])).rowCount)
       }
       if (!valid) ctx.throw(401, 'Mã xác thực không đúng hoặc đã được sử dụng.')
+      await clearAttempt(mfaBucket)
       const user = await pool.query("SELECT id,role,must_change_password,token_version FROM identity.users WHERE id=$1 AND status='HOAT_DONG'", [claims.sub])
       if (!user.rowCount || (claims.tokenVersion ?? 0) !== user.rows[0].token_version) ctx.throw(401, 'Tài khoản không còn hoạt động hoặc phiên đã bị thu hồi.')
       ctx.body = { token: signToken(user.rows[0]), role: user.rows[0].role, mustChangePassword: user.rows[0].must_change_password }
@@ -101,21 +141,24 @@ app.use(async (ctx, next) => {
     if (ctx.method === 'POST' && ctx.path === '/api/auth/mfa/passkey/options') {
       const claims = await verifyBearer(ctx, { allowPending: true })
       if (!claims.mfaPending) ctx.throw(401, 'Phiên xác thực hai lớp đã hết hạn.')
+      await reserveAttempt(ctx, 'mfa-passkey-options', `${claims.sub}:${clientIp(ctx)}`, 20)
       const passkeys = await pool.query('SELECT credential_id,transports FROM identity.passkeys WHERE user_id=$1', [claims.sub])
       if (!passkeys.rowCount) ctx.throw(400, 'Tài khoản chưa đăng ký Passkey.')
       const options = await generateAuthenticationOptions({ rpID: webauthnRPID, userVerification: 'required', allowCredentials: passkeys.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })) })
-      ctx.body = { options, challengeToken: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: claims.mustChangePassword, tokenVersion: claims.tokenVersion, mfaPending: true, webauthnChallenge: options.challenge, purpose: 'mfa-passkey' }, jwtSecret, { expiresIn: '5m' }) }
+      ctx.body = { options, challengeToken: jwt.sign({ sub: claims.sub, role: claims.role, mustChangePassword: claims.mustChangePassword, tokenVersion: claims.tokenVersion, mfaPending: true, webauthnChallenge: options.challenge, purpose: 'mfa-passkey' }, identityPrivateKey, { expiresIn: '5m', algorithm: 'RS256' }) }
       return
     }
     if (ctx.method === 'POST' && ctx.path === '/api/auth/mfa/passkey/verify') {
       const { challengeToken, response } = ctx.request.body ?? {}
       let claims
-      try { claims = jwt.verify(challengeToken, jwtSecret); if (!claims.mfaPending || claims.purpose !== 'mfa-passkey' || !claims.webauthnChallenge) throw new Error('invalid') } catch { ctx.throw(401, 'Phiên Passkey đã hết hạn.') }
+      try { claims = jwt.verify(challengeToken, identityPublicKey, { algorithms: ['RS256'] }); if (!claims.mfaPending || claims.purpose !== 'mfa-passkey' || !claims.webauthnChallenge) throw new Error('invalid') } catch { ctx.throw(401, 'Phiên Passkey đã hết hạn.') }
+      const passkeyBucket = await reserveAttempt(ctx, 'mfa-passkey-verify', `${claims.sub}:${clientIp(ctx)}`, 6)
       const passkey = await pool.query('SELECT id,credential_id,public_key,sign_count,transports FROM identity.passkeys WHERE user_id=$1 AND credential_id=$2', [claims.sub, Buffer.from(String(response?.id ?? ''), 'utf8')])
       if (!passkey.rowCount) ctx.throw(401, 'Không nhận diện được Passkey.')
       let verification
       try { verification = await verifyAuthenticationResponse({ response, expectedChallenge: claims.webauthnChallenge, expectedOrigin: webauthnOrigin, expectedRPID: webauthnRPID, requireUserVerification: true, credential: { id: Buffer.from(passkey.rows[0].credential_id).toString('utf8'), publicKey: new Uint8Array(passkey.rows[0].public_key), counter: Number(passkey.rows[0].sign_count), transports: passkey.rows[0].transports } }) } catch { ctx.throw(401, 'Xác thực Passkey thất bại.') }
       if (!verification?.verified) ctx.throw(401, 'Xác thực Passkey thất bại.')
+      await clearAttempt(passkeyBucket)
       await pool.query('UPDATE identity.passkeys SET sign_count=$1,last_used_at=now() WHERE id=$2', [verification.authenticationInfo.newCounter, passkey.rows[0].id])
       const user = await pool.query("SELECT id,role,must_change_password,token_version FROM identity.users WHERE id=$1 AND status='HOAT_DONG'", [claims.sub])
       if (!user.rowCount || (claims.tokenVersion ?? 0) !== user.rows[0].token_version) ctx.throw(401, 'Tài khoản không còn hoạt động hoặc phiên đã bị thu hồi.')
@@ -165,12 +208,11 @@ app.use(async (ctx, next) => {
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/security/totp/setup') {
     const { currentPassword } = ctx.request.body ?? {}
-    const result = await pool.query('SELECT username,password_hash FROM identity.users WHERE id=$1', [ctx.state.identity.sub])
-    if (!result.rowCount || !(await verifyPassword(currentPassword ?? '', result.rows[0].password_hash)).valid) ctx.throw(403, 'Nhập đúng mật khẩu hiện tại để bật Google Authenticator.')
+    const user = await requireCurrentPassword(ctx, ctx.state.identity.sub, currentPassword, 'Nhập đúng mật khẩu hiện tại để bật Google Authenticator.')
     const existing = await pool.query('SELECT confirmed_at FROM identity.totp_factors WHERE user_id=$1', [ctx.state.identity.sub])
     if (existing.rows[0]?.confirmed_at) ctx.throw(409, 'Google Authenticator đã được bật.')
     const secret = new OTPAuth.Secret({ size: 20 }).base32
-    const totp = new OTPAuth.TOTP({ issuer: 'QL Đề Tài', label: result.rows[0].username, algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(secret) })
+    const totp = new OTPAuth.TOTP({ issuer: 'QL Đề Tài', label: user.username, algorithm: 'SHA1', digits: 6, period: 30, secret: OTPAuth.Secret.fromBase32(secret) })
     await pool.query(`INSERT INTO identity.totp_factors(user_id,encrypted_secret,encryption_version,confirmed_at) VALUES($1,$2,'AES-256-GCM-v1',NULL)
       ON CONFLICT(user_id) DO UPDATE SET encrypted_secret=EXCLUDED.encrypted_secret,encryption_version=EXCLUDED.encryption_version,confirmed_at=NULL,created_at=now()`, [ctx.state.identity.sub, encryptSecret(secret)])
     ctx.body = { secret, otpauthUrl: totp.toString() }
@@ -178,8 +220,10 @@ app.use(async (ctx, next) => {
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/security/totp/confirm') {
     const { code } = ctx.request.body ?? {}
+    const confirmBucket = await reserveAttempt(ctx, 'totp-confirm', `${ctx.state.identity.sub}:${clientIp(ctx)}`, 6)
     const pending = await pool.query('SELECT encrypted_secret FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NULL', [ctx.state.identity.sub])
     if (!pending.rowCount || !checkTotp(decryptSecret(pending.rows[0].encrypted_secret), String(code ?? ''))) ctx.throw(400, 'Mã Google Authenticator không đúng.')
+    await clearAttempt(confirmBucket)
     const recoveryCodes = Array.from({ length: 10 }, () => randomBytes(6).toString('hex').toUpperCase())
     const client = await pool.connect()
     try {
@@ -195,10 +239,11 @@ app.use(async (ctx, next) => {
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/security/totp/disable') {
     const { currentPassword, code } = ctx.request.body ?? {}
-    const user = await pool.query('SELECT password_hash FROM identity.users WHERE id=$1', [ctx.state.identity.sub])
-    if (!user.rowCount || !(await verifyPassword(currentPassword ?? '', user.rows[0].password_hash)).valid) ctx.throw(403, 'Mật khẩu hiện tại không đúng.')
+    await requireCurrentPassword(ctx, ctx.state.identity.sub, currentPassword, 'Mật khẩu hiện tại không đúng.')
+    const disableBucket = await reserveAttempt(ctx, 'totp-disable', `${ctx.state.identity.sub}:${clientIp(ctx)}`, 6)
     const factor = await pool.query('SELECT encrypted_secret FROM identity.totp_factors WHERE user_id=$1 AND confirmed_at IS NOT NULL', [ctx.state.identity.sub])
     if (!factor.rowCount || !checkTotp(decryptSecret(factor.rows[0].encrypted_secret), String(code ?? ''))) ctx.throw(400, 'Mã Google Authenticator không đúng.')
+    await clearAttempt(disableBucket)
     await pool.query('WITH codes AS (DELETE FROM identity.recovery_codes WHERE user_id=$1) DELETE FROM identity.totp_factors WHERE user_id=$1', [ctx.state.identity.sub])
     ctx.body = { enabled: false }
     return
@@ -206,17 +251,16 @@ app.use(async (ctx, next) => {
 
   if (ctx.method === 'POST' && ctx.path === '/api/portal/security/passkeys/options') {
     const { currentPassword } = ctx.request.body ?? {}
-    const user = await pool.query('SELECT username,display_name,password_hash FROM identity.users WHERE id=$1', [ctx.state.identity.sub])
-    if (!user.rowCount || !(await verifyPassword(currentPassword ?? '', user.rows[0].password_hash)).valid) ctx.throw(403, 'Nhập đúng mật khẩu hiện tại để thêm Passkey.')
+    const user = await requireCurrentPassword(ctx, ctx.state.identity.sub, currentPassword, 'Nhập đúng mật khẩu hiện tại để thêm Passkey.')
     const known = await pool.query('SELECT credential_id,transports FROM identity.passkeys WHERE user_id=$1', [ctx.state.identity.sub])
-    const options = await generateRegistrationOptions({ rpName: 'QL Đề Tài', rpID: webauthnRPID, userName: user.rows[0].username, userDisplayName: user.rows[0].display_name, userID: new Uint8Array(Buffer.from(ctx.state.identity.sub.replaceAll('-', ''), 'hex')), attestationType: 'none', excludeCredentials: known.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })), authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' } })
-    ctx.body = { options, challengeToken: jwt.sign({ sub: ctx.state.identity.sub, challenge: options.challenge, purpose: 'passkey-register' }, jwtSecret, { expiresIn: '5m' }) }
+    const options = await generateRegistrationOptions({ rpName: 'QL Đề Tài', rpID: webauthnRPID, userName: user.username, userDisplayName: user.display_name, userID: new Uint8Array(Buffer.from(ctx.state.identity.sub.replaceAll('-', ''), 'hex')), attestationType: 'none', excludeCredentials: known.rows.map((item) => ({ id: Buffer.from(item.credential_id).toString('utf8'), transports: item.transports })), authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' } })
+    ctx.body = { options, challengeToken: jwt.sign({ sub: ctx.state.identity.sub, challenge: options.challenge, purpose: 'passkey-register' }, identityPrivateKey, { expiresIn: '5m', algorithm: 'RS256' }) }
     return
   }
   if (ctx.method === 'POST' && ctx.path === '/api/portal/security/passkeys/verify') {
     const { challengeToken, response, label } = ctx.request.body ?? {}
     let challenge
-    try { challenge = jwt.verify(challengeToken, jwtSecret); if (challenge.sub !== ctx.state.identity.sub || challenge.purpose !== 'passkey-register') throw new Error('invalid') } catch { ctx.throw(401, 'Phiên đăng ký Passkey đã hết hạn.') }
+    try { challenge = jwt.verify(challengeToken, identityPublicKey, { algorithms: ['RS256'] }); if (challenge.sub !== ctx.state.identity.sub || challenge.purpose !== 'passkey-register') throw new Error('invalid') } catch { ctx.throw(401, 'Phiên đăng ký Passkey đã hết hạn.') }
     let verification
     try { verification = await verifyRegistrationResponse({ response, expectedChallenge: challenge.challenge, expectedOrigin: webauthnOrigin, expectedRPID: webauthnRPID, requireUserVerification: true }) } catch { ctx.throw(400, 'Không xác minh được Passkey.') }
     if (!verification?.verified || !verification.registrationInfo) ctx.throw(400, 'Đăng ký Passkey thất bại.')
@@ -229,8 +273,7 @@ app.use(async (ctx, next) => {
   const passkeyDelete = ctx.path.match(/^\/api\/portal\/security\/passkeys\/([^/]+)$/)
   if (passkeyDelete && ctx.method === 'DELETE') {
     const { currentPassword } = ctx.request.body ?? {}
-    const user = await pool.query('SELECT password_hash FROM identity.users WHERE id=$1', [ctx.state.identity.sub])
-    if (!user.rowCount || !(await verifyPassword(currentPassword ?? '', user.rows[0].password_hash)).valid) ctx.throw(403, 'Mật khẩu hiện tại không đúng.')
+    await requireCurrentPassword(ctx, ctx.state.identity.sub, currentPassword, 'Mật khẩu hiện tại không đúng.')
     await pool.query('DELETE FROM identity.passkeys WHERE id=$1 AND user_id=$2', [passkeyDelete[1], ctx.state.identity.sub])
     ctx.body = { deleted: true }
     return
