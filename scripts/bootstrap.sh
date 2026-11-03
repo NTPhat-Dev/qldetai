@@ -86,5 +86,5 @@ printf '\nWeb cuc bo: http://localhost:%s\nQuan tri: http://localhost:%s/admin\n
 if [[ "${web_bind:-127.0.0.1}" != '127.0.0.1' && "${web_bind:-127.0.0.1}" != '::1' ]]; then
   printf 'WEB_BIND dang mo cho mang. Chi cho phep truy cap tu xa qua HTTPS va chan truy cap HTTP truc tiep bang firewall.\n'
 else
-  printf 'Truy cap tu dien thoai/may khac can reverse proxy HTTPS; xem docs/SECURITY.md.\n'
+  printf 'Truy cap tu dien thoai/may khac can reverse proxy HTTPS va ten mien hop le.\n'
 fi
