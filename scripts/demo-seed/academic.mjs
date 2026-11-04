@@ -8,6 +8,8 @@ const client = await pool.connect()
 try {
   await client.query('BEGIN')
   let created = 0
+  let topicsAdded = 0
+  let windowsAdded = 0
   for (const department of data.departments) {
     const result = await client.query('INSERT INTO academic.departments(id,code,name) VALUES($1,$2,$3) ON CONFLICT(id) DO NOTHING', [department.id, department.code, department.name])
     created += result.rowCount
@@ -20,17 +22,29 @@ try {
   created += (await client.query('INSERT INTO academic.semesters(id,code,name,starts_on,ends_on) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING', [semester.id, semester.code, semester.name, semester.start, semester.end])).rowCount
   const round = data.round
   created += (await client.query('INSERT INTO academic.rounds(id,semester_id,code,opens_at,closes_at,is_open) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT(id) DO NOTHING', [round.id, round.semesterId, round.code, round.opensAt, round.closesAt])).rowCount
+  const bulkRound = data.bulkRound
+  created += (await client.query('INSERT INTO academic.rounds(id,semester_id,code,opens_at,closes_at,is_open) VALUES($1,$2,$3,$4,$5,true) ON CONFLICT(id) DO NOTHING', [bulkRound.id, bulkRound.semesterId, bulkRound.code, bulkRound.opensAt, bulkRound.closesAt])).rowCount
   for (const topic of data.topics) {
-    created += (await client.query(`INSERT INTO academic.topics
+    const topicInsert = await client.query(`INSERT INTO academic.topics
       (id,code,title,description,lecturer_id,department_id,opens_at,closes_at,capacity,published)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
-      [topic.id, topic.code, topic.title, topic.description, topic.lecturerId, topic.departmentId, topic.opensAt, topic.closesAt, topic.capacity, topic.published])).rowCount
-    created += (await client.query(`INSERT INTO academic.topic_round_windows(topic_id,round_id,opens_at,closes_at,allowed)
+      [topic.id, topic.code, topic.title, topic.description, topic.lecturerId, topic.departmentId, topic.opensAt, topic.closesAt, topic.capacity, topic.published])
+    created += topicInsert.rowCount
+    topicsAdded += topicInsert.rowCount
+    if (topic.roundId) {
+      await client.query(`UPDATE academic.topic_round_windows SET round_id=$1
+        WHERE topic_id=$2 AND round_id=$3 AND NOT EXISTS
+          (SELECT 1 FROM academic.topic_round_windows WHERE topic_id=$2 AND round_id=$1)`,
+        [topic.roundId, topic.id, round.id])
+    }
+    const windowInsert = await client.query(`INSERT INTO academic.topic_round_windows(topic_id,round_id,opens_at,closes_at,allowed)
       VALUES($1,$2,$3,$4,true) ON CONFLICT(topic_id,round_id) DO NOTHING`,
-      [topic.id, round.id, topic.opensAt, topic.closesAt])).rowCount
+      [topic.id, topic.roundId ?? round.id, topic.opensAt, topic.closesAt])
+    created += windowInsert.rowCount
+    windowsAdded += windowInsert.rowCount
   }
   await client.query('COMMIT')
-  console.log(JSON.stringify({ created }))
+  console.log(JSON.stringify({ created, topicsAdded, windowsAdded }))
 } catch (error) {
   await client.query('ROLLBACK').catch(() => {})
   throw error
