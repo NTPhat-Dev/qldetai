@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "identity": "node identity/src/index.js",
     "academic": "node academic/src/index.js",
     "registration": "node registration/src/index.js",

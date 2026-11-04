@@ -7,6 +7,7 @@ type Topic = {
   id: string; code: string; title: string; description?: string; lecturer?: string; department?: string
   published?: boolean; pending?: number; registered?: number; capacity?: number | null
   round_id?: string; round_code?: string; round_codes?: string; opens_at?: string; closes_at?: string
+  semester_start?: string; semester_end?: string
 }
 type Registration = {
   id: string; code?: string; title?: string; status: string; round_id?: string; submitted_at?: string
@@ -29,6 +30,23 @@ type PortalData = {
 const API = '/api'
 const statusNames: Record<string, string> = { DANG_CHO_XU_LY: 'Chờ kết nối để xử lý', CHO_DUYET: 'Chờ duyệt', DA_DUYET: 'Đã duyệt', TU_CHOI: 'Từ chối', DA_HUY: 'Đã hủy' }
 const localDateTime = (value?: string) => value ? new Date(value).toLocaleString('vi-VN') : '—'
+const addDays = (dateStr: string, days: number): string => {
+  const [y, m, d] = dateStr.slice(0, 10).split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + days))
+  return dt.toISOString().slice(0, 10)
+}
+const dateInput = (value?: string) => {
+  if (!value) return ''
+  const date = new Date(value)
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+function topicDateError(open: Date, close: Date, semesterStart?: string, semesterEnd?: string, roundOpen?: string, roundClose?: string) {
+  if (!Number.isFinite(open.getTime()) || !Number.isFinite(close.getTime()) || open >= close) return 'Thời gian đóng nhận đăng ký phải sau thời gian mở.'
+  if (semesterStart && open < new Date(`${addDays(semesterStart, 1)}T00:00:00+07:00`)) return `Ngày mở nhận đăng ký phải sau ngày bắt đầu học kỳ (từ ngày ${addDays(semesterStart, 1)} trở đi).`
+  if (semesterEnd && close >= new Date(`${semesterEnd}T00:00:00+07:00`)) return `Ngày đóng nhận đăng ký phải trước ngày kết thúc học kỳ (trước ngày ${semesterEnd}).`
+  if (roundOpen && open < new Date(roundOpen) || roundClose && close > new Date(roundClose)) return 'Thời gian nhận đăng ký của đề tài phải nằm trong đợt đăng ký.'
+  return ''
+}
 const subjectFromToken = (token: string) => {
   try {
     const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
@@ -49,6 +67,9 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   const [data, setData] = useState<PortalData | null>(() => readSessionValue<PortalData>(dataCacheKey))
   const [rounds, setRounds] = useState<RegistrationRound[]>([])
   const [roundsError, setRoundsError] = useState('')
+  const [selectedRoundId, setSelectedRoundId] = useState('')
+  const [topicOpensAt, setTopicOpensAt] = useState('')
+  const [topicClosesAt, setTopicClosesAt] = useState('')
   const [pendingRegistrations, setPendingRegistrations] = useState<PendingRegistration[]>(() => readLocalList<PendingRegistration>(outboxKey))
   const pendingRef = useRef(pendingRegistrations)
   const syncingRef = useRef(false)
@@ -177,26 +198,29 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
     if (values.opensAt && values.closesAt) {
       const open = new Date(String(values.opensAt))
       const close = new Date(String(values.closesAt))
-      if (open >= close) {
-        setMessage('Thời gian đóng nhận đăng ký phải sau thời gian mở.')
-        return
-      }
-      if (round?.semester_start && open < new Date(`${round.semester_start}T00:00:00`)) {
-        setMessage('Thời gian mở đăng ký phải sau ngày bắt đầu học kỳ.')
-        return
-      }
-      if (round?.semester_end && close > new Date(`${round.semester_end}T23:59:59`)) {
-        setMessage('Thời gian đóng đăng ký phải trước ngày kết thúc học kỳ.')
-        return
-      }
-      if (round && (open < new Date(round.opens_at) || close > new Date(round.closes_at))) {
-        setMessage('Thời gian nhận đăng ký của đề tài phải nằm trong đợt đăng ký.')
-        return
-      }
+      const dateError = topicDateError(open, close, round?.semester_start, round?.semester_end, round?.opens_at, round?.closes_at)
+      if (dateError) { setMessage(dateError); return }
       values.opensAt = open.toISOString()
       values.closesAt = close.toISOString()
     }
-    if (await submit('/portal/topics', 'POST', values)) form.reset()
+    if (await submit('/portal/topics', 'POST', values)) {
+      form.reset()
+      setSelectedRoundId('')
+      setTopicOpensAt('')
+      setTopicClosesAt('')
+    }
+  }
+
+  function updateTopic(event: FormEvent<HTMLFormElement>, topic: Topic) {
+    event.preventDefault()
+    const values = Object.fromEntries(new FormData(event.currentTarget).entries())
+    const open = new Date(String(values.opensAt))
+    const close = new Date(String(values.closesAt))
+    const dateError = topicDateError(open, close, topic.semester_start, topic.semester_end)
+    if (dateError) { setMessage(dateError); return }
+    values.opensAt = open.toISOString()
+    values.closesAt = close.toISOString()
+    void submit(`/portal/topics/${topic.id}`, 'PATCH', values)
   }
 
   if (error && !data) return <main className="portal-error"><p>{error}</p><button className="outline-button" onClick={() => void reload().catch((reason: Error) => setError(reason.message))}>Thử lại</button><button className="dark-button" onClick={onLogout}>Đăng xuất</button></main>
@@ -205,13 +229,16 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
   const student = data.role === 'SINH_VIEN'
   const name = data.profile?.ho_ten ?? 'Người dùng'
   const registrations = data.registrations ?? []
+  const selectedRound = rounds.find((round) => round.id === selectedRoundId)
+  const openRounds = rounds.filter((round) => round.is_open)
+  const lecturerRegistrations = registrations.filter((item) => item.status !== 'DA_HUY')
   const filteredTopics = data.topics.filter((topic) => `${topic.title} ${topic.code} ${topic.lecturer ?? ''} ${topic.department ?? ''}`.toLocaleLowerCase('vi').includes(query.toLocaleLowerCase('vi')))
   const visibleRegistrations: Registration[] = student
     ? [...pendingRegistrations.filter((item) => !registrations.some((registration) => registration.id === item.requestId)).map((item) => ({
       id: item.requestId, code: item.topicCode, title: item.topicTitle, status: 'DANG_CHO_XU_LY',
       round_id: item.roundId, round_code: item.roundCode, submitted_at: item.createdAt,
     })), ...registrations]
-    : registrations
+    : lecturerRegistrations
   return (
     <main className="user-portal">
       <header className="portal-header"><a className="portal-brand" href="/portal">DEMO</a><nav aria-label="Cổng người dùng"><button className={page === 'home' ? 'selected' : ''} onClick={() => setPage('home')}>{student ? 'Tìm đề tài' : 'Đề tài của tôi'}</button><button className={page === (student ? 'registrations' : 'review') ? 'selected' : ''} onClick={() => setPage(student ? 'registrations' : 'review')}>{student ? 'Đăng ký của tôi' : 'Duyệt đăng ký'}</button><button className={page === 'profile' ? 'selected' : ''} onClick={() => setPage('profile')}>Hồ sơ</button><button className={page === 'settings' ? 'selected' : ''} onClick={() => setPage('settings')}>Cài đặt</button></nav><div className="portal-user"><span>{name}</span><button onClick={onLogout}>Đăng xuất</button></div></header>
@@ -227,7 +254,7 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
           {student && <article><span>LỚP</span><strong>{data.profile?.lop ?? '—'}</strong></article>}
           <article><span>{student ? 'ĐỀ TÀI ĐANG MỞ' : 'ĐỀ TÀI CỦA TÔI'}</span><strong>{data.topics.length}</strong></article>
           {student && <article><span>ĐƠN ĐĂNG KÝ</span><strong>{visibleRegistrations.length}</strong></article>}
-          {!student && <article><span>ĐĂNG KÝ CHỜ DUYỆT</span><strong>{registrations.filter((item) => item.status === 'CHO_DUYET').length}</strong></article>}
+          {!student && <article><span>ĐĂNG KÝ CHỜ DUYỆT</span><strong>{lecturerRegistrations.filter((item) => item.status === 'CHO_DUYET').length}</strong></article>}
         </section>}
         {page === 'profile' ? <PersonalSettings token={token} page="profile" onTokenChange={onTokenChange}/> : page === 'settings' ? <PersonalSettings token={token} page="settings" onTokenChange={onTokenChange}/> : student ? <>
           <section className="portal-section" id="topics" hidden={page !== 'home'}>
@@ -256,19 +283,30 @@ export default function Portal({ token, onLogout, onTokenChange }: { token: stri
             <form className="topic-create-form" onSubmit={createTopic}>
               <label className="topic-title-field">Tên đề tài<input name="title" required maxLength={240}/></label>
               <label className="topic-description-field">Mô tả<textarea name="description" rows={3}/></label>
-              <label>Đợt đăng ký<select name="roundId" required disabled={rounds.length === 0}><option value="">Chọn đợt đăng ký</option>{rounds.map((round) => <option key={round.id} value={round.id}>{round.semester_code} · {round.semester_name} · {round.code} ({round.is_open ? 'Đang mở' : 'Đang đóng'})</option>)}</select></label>
-              <label>Mở nhận đăng ký<input name="opensAt" type="datetime-local" required/></label>
-              <label>Đóng nhận đăng ký<input name="closesAt" type="datetime-local" required/></label>
+              <label>Đợt đăng ký<select name="roundId" value={selectedRoundId} onChange={(e) => { setSelectedRoundId(e.target.value); setTopicOpensAt(''); setTopicClosesAt('') }} required disabled={!openRounds.length}><option value="">Chọn đợt đăng ký</option>{openRounds.map((round) => <option key={round.id} value={round.id}>{round.semester_code} · {round.semester_name} · {round.code}{round.semester_start && round.semester_end ? ` · Học kỳ: ${round.semester_start} – ${round.semester_end}` : ''}</option>)}</select></label>
+              <label>Mở nhận đăng ký<input name="opensAt" type="datetime-local" required value={topicOpensAt} min={selectedRound?.semester_start ? `${addDays(selectedRound.semester_start, 1)}T00:00` : undefined} max={topicClosesAt || (selectedRound?.semester_end ? `${addDays(selectedRound.semester_end, -1)}T23:59` : undefined)} onChange={(e) => setTopicOpensAt(e.target.value)}/></label>
+              <label>Đóng nhận đăng ký<input name="closesAt" type="datetime-local" required value={topicClosesAt} min={topicOpensAt || (selectedRound?.semester_start ? `${addDays(selectedRound.semester_start, 1)}T00:00` : undefined)} max={selectedRound?.semester_end ? `${addDays(selectedRound.semester_end, -1)}T23:59` : undefined} onChange={(e) => setTopicClosesAt(e.target.value)}/></label>
               <label>Số lượng<input name="capacity" type="number" min="1" step="1" required/></label>
-              <button className="dark-button" disabled={busy || rounds.length === 0}>Tạo bản nháp</button>
+              <button className="dark-button" disabled={busy || !openRounds.length}>Tạo bản nháp</button>
             </form>
             <p className="topic-round-note">Cấu hình thời gian mở và đóng nhận đăng ký cho đề tài.</p>
             <div className="portal-table">{data.topics.length ? data.topics.map((topic) => <article key={topic.id}>
               <div className="portal-row"><span>{topic.code}{topic.round_codes ? ` · Đợt ${topic.round_codes}` : ''}</span><strong>{topic.title}</strong><em>{topic.pending ?? 0} chờ duyệt · {topic.registered ?? 0} đang hiệu lực</em><small>{topic.published ? 'Đã công bố' : 'Bản nháp'}</small><button className="outline-button" disabled={busy || (Boolean(topic.published) && Boolean(topic.registered))} onClick={() => void submit(`/portal/topics/${topic.id}/publication`, 'PATCH', { published: !topic.published })}>{topic.published ? 'Ẩn đề tài' : 'Công bố'}</button></div>
-              {!topic.published && !topic.registered && <details className="topic-editor"><summary>Sửa bản nháp</summary><form onSubmit={(event) => { event.preventDefault(); const val = Object.fromEntries(new FormData(event.currentTarget).entries()); if (val.opensAt) val.opensAt = new Date(String(val.opensAt)).toISOString(); if (val.closesAt) val.closesAt = new Date(String(val.closesAt)).toISOString(); void submit(`/portal/topics/${topic.id}`, 'PATCH', val) }}><label>Tên đề tài<input name="title" defaultValue={topic.title} maxLength={240} required/></label><label>Mô tả<textarea name="description" defaultValue={topic.description ?? ''} rows={3}/></label><label>Mở nhận đăng ký<input name="opensAt" type="datetime-local" defaultValue={topic.opens_at ? new Date(new Date(topic.opens_at).getTime() - new Date().getTimezoneOffset()*60000).toISOString().slice(0, 16) : ''}/></label><label>Đóng nhận đăng ký<input name="closesAt" type="datetime-local" defaultValue={topic.closes_at ? new Date(new Date(topic.closes_at).getTime() - new Date().getTimezoneOffset()*60000).toISOString().slice(0, 16) : ''}/></label><label>Số lượng<input name="capacity" type="number" min="1" step="1" defaultValue={topic.capacity ?? 1} required/></label><button className="dark-button" disabled={busy}>Lưu bản nháp</button></form></details>}
+              {!topic.published && !topic.registered && <details className="topic-editor">
+                <summary>Sửa bản nháp</summary>
+                <form onSubmit={(event) => updateTopic(event, topic)}>
+                  <label>Tên đề tài<input name="title" defaultValue={topic.title} maxLength={240} required/></label>
+                  <label>Mô tả<textarea name="description" defaultValue={topic.description ?? ''} rows={3}/></label>
+                  <label>Mở nhận đăng ký<input name="opensAt" type="datetime-local" defaultValue={dateInput(topic.opens_at)} min={topic.semester_start ? `${addDays(topic.semester_start, 1)}T00:00` : undefined} max={topic.semester_end ? `${addDays(topic.semester_end, -1)}T23:59` : undefined} required/></label>
+                  <label>Đóng nhận đăng ký<input name="closesAt" type="datetime-local" defaultValue={dateInput(topic.closes_at)} min={topic.semester_start ? `${addDays(topic.semester_start, 1)}T00:00` : undefined} max={topic.semester_end ? `${addDays(topic.semester_end, -1)}T23:59` : undefined} required/></label>
+                  <label>Số lượng<input name="capacity" type="number" min="1" step="1" defaultValue={topic.capacity ?? 1} required/></label>
+                  <button className="dark-button" disabled={busy}>Lưu bản nháp</button>
+                </form>
+              </details>}
+
             </article>) : <div className="portal-empty">Bạn chưa có đề tài hướng dẫn.</div>}</div>
           </section>
-          <section className="portal-section" id="review" hidden={page !== 'review'}><h2>Đăng ký của sinh viên</h2><div className="portal-table">{registrations.length ? registrations.map((item) => <div className="portal-row review-row" key={item.id}><span>{item.student_code}</span><strong>{item.student_name} · {item.topic_title}</strong><small>Đợt {item.round_code} · {localDateTime(item.submitted_at)}</small><em>{statusNames[item.status] ?? item.status}</em>{item.reason && <span className="registration-note">Lý do đăng ký: {item.reason}</span>}{item.note && <span className="registration-note">Phản hồi: {item.note}</span>}{item.history?.length ? <details className="registration-note"><summary>Lịch sử xử lý</summary>{item.history.map((event, index) => <p key={index}>{localDateTime(event.changed_at)} · {statusNames[event.new_status] ?? event.new_status}{event.note ? ` · ${event.note}` : ''}</p>)}</details> : null}{item.status === 'CHO_DUYET' && <><button className="dark-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'DA_DUYET' })}>Duyệt</button><button className="outline-button" disabled={busy} onClick={() => { const note = window.prompt('Nhập lý do từ chối:'); if (note?.trim()) void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'TU_CHOI', note }) }}>Từ chối</button></>}</div>) : <div className="portal-empty">Chưa có đăng ký nào.</div>}</div></section>
+          <section className="portal-section" id="review" hidden={page !== 'review'}><h2>Đăng ký của sinh viên</h2><div className="portal-table">{lecturerRegistrations.length ? lecturerRegistrations.map((item) => <div className="portal-row review-row" key={item.id}><span>{item.student_code}</span><strong>{item.student_name} · {item.topic_title}</strong><small>Đợt {item.round_code} · {localDateTime(item.submitted_at)}</small><em>{statusNames[item.status] ?? item.status}</em>{item.reason && <span className="registration-note">Lý do đăng ký: {item.reason}</span>}{item.note && <span className="registration-note">Phản hồi: {item.note}</span>}{item.history?.length ? <details className="registration-note"><summary>Lịch sử xử lý</summary>{item.history.map((event, index) => <p key={index}>{localDateTime(event.changed_at)} · {statusNames[event.new_status] ?? event.new_status}{event.note ? ` · ${event.note}` : ''}</p>)}</details> : null}{item.status === 'CHO_DUYET' && <><button className="dark-button" disabled={busy} onClick={() => void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'DA_DUYET' })}>Duyệt</button><button className="outline-button" disabled={busy} onClick={() => { const note = window.prompt('Nhập lý do từ chối:'); if (note?.trim()) void submit(`/portal/registrations/${item.id}/decision`, 'PATCH', { status: 'TU_CHOI', note }) }}>Từ chối</button></>}</div>) : <div className="portal-empty">Chưa có đăng ký nào.</div>}</div></section>
         </>}
       </section>
     </main>

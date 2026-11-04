@@ -203,8 +203,13 @@ try {
     expect(await call('/api/portal/profile', { token: fixtures.students[8].token, method: 'PATCH', body: { phone: '0912345678' } }), 200, 'accept ten-digit phone number')
     const nextYear = new Date().getUTCFullYear() + 1
     expect(await call('/api/admin/rounds', { token: fixtures.admin.token, method: 'POST', body: { semesterNumber: 1, semesterStart: `${nextYear}-02-30`, semesterEnd: `${nextYear}-12-31` } }), 400, 'reject impossible calendar date')
+    expect(await call('/api/admin/rounds', { token: fixtures.admin.token, method: 'POST', body: { semesterNumber: 1, semesterStart: `${nextYear}-01-01`, semesterEnd: `${nextYear}-12-31`, opensAt: `${nextYear}-01-01T12:00:00+07:00`, closesAt: `${nextYear}-06-01T12:00:00+07:00` } }), 400, 'registration cannot open on semester start date')
+    expect(await call('/api/admin/rounds', { token: fixtures.admin.token, method: 'POST', body: { semesterNumber: 1, semesterStart: `${nextYear}-01-01`, semesterEnd: `${nextYear}-12-31`, opensAt: `${nextYear}-06-01T12:00:00+07:00`, closesAt: `${nextYear}-12-31T12:00:00+07:00` } }), 400, 'registration cannot close on semester end date')
     const autoWindow = expect(await call('/api/admin/rounds', { token: fixtures.admin.token, method: 'POST', body: { semesterNumber: 1, semesterStart: `${nextYear}-01-01`, semesterEnd: `${nextYear}-12-31` } }), 201, 'semester creates default round window')
     assert.ok(new Date(autoWindow.opens_at) < new Date(autoWindow.closes_at))
+    const visibleRounds = expect(await call('/api/portal/rounds', { token: fixtures.lecturer.token }), 200, 'lecturer rounds after creating a closed round')
+    assert.ok(!visibleRounds.some((round) => round.id === autoWindow.id), 'closed round is not offered to lecturers')
+    expect(await call('/api/portal/topics', { token: fixtures.lecturer.token, method: 'POST', body: { title: 'Closed round topic', roundId: autoWindow.id, capacity: 1 } }), 400, 'cannot create topic for a closed round')
   })
   await check('12 simultaneous registrations for the final seat', async () => {
     const requestIds = fixtures.students.map(() => randomUUID())
@@ -249,6 +254,7 @@ try {
     expect(await register(fixtures.students[0], fixtures.recoveryTopic, requestId), 200, 'replayed queued request')
     assert.equal(await sql('registration-db', 'registration', `SELECT count(*) FROM registration.registrations WHERE id='${requestId}'`), '1')
     expect(await call(`/api/admin/rounds/${fixtures.round.id}`, { token: fixtures.admin.token, method: 'PATCH', body: { isOpen: false } }), 200, 'close round after recovery')
+    assert.ok(!(expect(await call('/api/portal/rounds', { token: fixtures.lecturer.token }), 200, 'lecturer rounds after close')).some((round) => round.id === fixtures.round.id))
     expect(await register(fixtures.students[2], fixtures.recoveryTopic), 409, 'closed round rejects new registrations')
     expect(await call(`/api/admin/rounds/${fixtures.round.id}`, { token: fixtures.admin.token, method: 'PATCH', body: { isOpen: true } }), 200, 'reopen round')
     expect(await register(fixtures.students[2], fixtures.recoveryTopic), 201, 'reopened round resumes admissions')

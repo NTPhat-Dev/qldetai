@@ -41,7 +41,16 @@ app.use(async (ctx) => {
     const [topics, clock, rows, counts] = await Promise.all([
       fetch(`http://academic-service:3102/internal/v1/academic/lecturers/${user.id}/topics`).then((response) => response.json()),
       pool.query('SELECT clock_timestamp() AS server_time'),
-      pool.query(`SELECT r.*,r.decision_note AS note,${history} AS history FROM registration.registrations r WHERE r.lecturer_id=$1 OR r.lecturer_id IS NULL ORDER BY r.submitted_at DESC LIMIT 500`, [user.id]),
+      pool.query(`SELECT r.*,r.decision_note AS note,${history} AS history
+        FROM registration.registrations r
+        WHERE (r.lecturer_id=$1 OR r.lecturer_id IS NULL)
+          AND r.status != 'DA_HUY'
+          AND NOT EXISTS (
+            SELECT 1 FROM registration.admission_blocks b
+            WHERE (b.scope='rounds' AND b.entity_id=r.round_id)
+               OR (b.scope='topics' AND b.entity_id=r.topic_id)
+          )
+        ORDER BY r.submitted_at DESC LIMIT 500`, [user.id]),
       pool.query("SELECT topic_id,count(*) FILTER (WHERE status='CHO_DUYET')::int AS pending,count(*) FILTER (WHERE status IN ('CHO_DUYET','DA_DUYET'))::int AS registered FROM registration.registrations GROUP BY topic_id"),
     ])
     const owned = new Set(topics.map((topic) => topic.id))
